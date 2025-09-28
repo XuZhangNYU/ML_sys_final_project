@@ -21,11 +21,77 @@ T op_cross_entropy_loss(const Tensor<T> &logits, const Tensor<S> &targets,
     {
         throw std::runtime_error("op_cross_entropy_loss: device mismatch");
     }
+   int N = logits.h;
+    int threads = 128;
+    int blocks = (N + threads - 1) / threads;
 
+    T zero = 0;
+    T* d_loss_sum;
+    cudaMalloc(&d_loss_sum, sizeof(T));
+    cudaMemcpy(d_loss_sum, &zero, sizeof(T), cudaMemcpyHostToDevice);
+
+    // Launch CUDA kernel
+    cross_entropy_kernel<<<blocks, threads>>>(
+        logits,
+        targets,
+        d_logits,
+        d_loss_sum
+    );
+    cudaDeviceSynchronize();
+
+    // Copy back summed loss
+    T total_loss = 0;
+    cudaMemcpy(&total_loss, d_loss_sum, sizeof(T), cudaMemcpyDeviceToHost);
+    cudaFree(d_loss_sum);
+
+    // Return average loss
+    return total_loss / static_cast<T>(N);
+    }
     //Lab-1: please add your code here
     //You need to define separate GPU kernel function(s) and launch them here
     //In order to calculate d_logits, you should derive what its values should be 
     //symbolically.
-    return 0;
-    
+   
+
+
+template <typename T, typename S>
+__global__ void cross_entropy_kernel(
+    const Tensor<T> logits,
+    const Tensor<S> targets,
+    Tensor<T> d_logits,
+    T* loss_sum     // device scalar for accumulating total loss
+){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= logits.h) return;
+
+    int C = logits.w;   // num classes
+    int label = Index(targets, i, 0);
+
+    // max logit for numerical stability
+    T max_val = Index(logits, i, 0);
+    for(int j = 1; j < C; j++) {
+        T v = Index(logits, i, j);
+        if(v > max_val) max_val = v;
+    }
+
+    // Compute denominator
+    T sum_exp = 0;
+    for(int j = 0; j < C; j++) {
+        sum_exp += exp(Index(logits, i, j) - max_val);
+    }
+
+    // Compute probabilities and gradient
+    T loss_i = 0;
+    for(int j = 0; j < C; j++){
+        T p = exp(Index(logits, i, j) - max_val) / sum_exp;
+        T y = (j == label) ? 1.0f : 0.0f;
+        Index(d_logits, i, j) = (p - y) / logits.h; // divide by batch size
+
+        if(j == label){
+            loss_i = -log(p);
+        }
+    }
+
+    // Atomic add loss for this sample
+    atomicAdd(loss_sum, loss_i);
 }

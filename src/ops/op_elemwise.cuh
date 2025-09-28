@@ -29,8 +29,8 @@ class AddFunc
 public:
     __host__ __device__ T operator()(T a, T b)
     { 
-      //Lab-1: add your code here (delete return 0)
-      return 0;
+
+        return a + b;
     }
 };
 
@@ -42,7 +42,7 @@ public:
     __host__ __device__ T operator()(T a)
     {
       //Lab-1: add your code here (delete return 0)
-      return 0;
+      return a + b;
     }
     const T b;
 };
@@ -55,7 +55,7 @@ public:
     __host__ __device__ T operator()(T a, T b)
     {
         //Lab-1: add your code here (delete return 0)
-        return 0;
+        return  a - b;
     }
 };
 
@@ -68,7 +68,7 @@ public:
     __host__ __device__ T operator()(T x, T a)
     {
         //Lab-1: add your code here (delete return 0)
-        return 0;
+        return x * a;
     }
 };
 
@@ -81,7 +81,7 @@ public:
     {
 
       //Lab-1: add your code here (delete return 0)
-      return 0;
+      return b * x;
     }
     const T b;
 };
@@ -95,6 +95,9 @@ public:
     __host__ __device__ OutT operator()(AT a, BT b)
     {
         //Lab-1: add your code here (delete return 0)
+        if (a == b) {
+            return 1;
+        }
         return 0;
     }
 };
@@ -106,8 +109,12 @@ class ReluFunc
 public:
     __host__ __device__ T operator()(T x)
     {
-        //Lab-1: add your code here (delete return 0)
-        return 0;
+        if (x > 0) {
+            return x;
+        } 
+        else {
+            return 0;
+        }
     }
 };
 
@@ -119,8 +126,12 @@ class ReluBackFunc
 public:
     __host__ __device__ T operator()(T x, T dy)
     {
-        //Lab-1: add your code here (delete return 0)
-        return 0;
+        if (x > 0) {
+            return dy;
+        } else {
+            return 0;
+        }
+      
     }
 };
 
@@ -159,6 +170,13 @@ template <typename OpFunc, typename T>
 __global__ void op_elemwise_unary_kernel(OpFunc f, Tensor<T> t, Tensor<T> out)
 {
   //Lab-1: add your code here
+    int cur_row = blockIdx.y * blockDim.y + threadIdx.y;
+    int cur_col = blockIdx.x * blockDim.x + threadIdx.x;
+    // printf( "in op_elemwise_unary_kernel .  run kernel.." );
+
+    if (cur_row < t.h && cur_col < t.w) {
+        Index(out, cur_row, cur_col) = f(Index(t, cur_row, cur_col));
+    }
 }
 
 //This helper function launches the GPU kernel to 
@@ -168,6 +186,18 @@ void op_elemwise_unary_gpu(OpFunc f, const Tensor<T> &t, Tensor<T> &out)
 {
   //Lab-1:add your code here. Somewhere in this function,
   //you need to call op_elemwise_unary_kernel<<<???, ???>>>(f, t, out);
+    dim3 blockDim(ELEMWISE_BLOCK_DIM, ELEMWISE_BLOCK_DIM);  // 16x16 threads per block
+    dim3 gridDim((t.w + ELEMWISE_BLOCK_DIM - 1) / ELEMWISE_BLOCK_DIM, (t.h + ELEMWISE_BLOCK_DIM - 1) / ELEMWISE_BLOCK_DIM);
+    // printf("op_elemwise_unary_gpu. about run kernel..");
+
+    op_elemwise_unary_kernel<<<gridDim, blockDim>>>(f, t, out);
+    // printf("op_elemwise_unary_gpu. wait cuda device synchronize.." );
+
+    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+    }
 }
 
 //This helper functions performs unary element wise operation on CPU
@@ -199,6 +229,28 @@ void op_elemwise_unary_cpu(OpFunc f, const Tensor<T> &t, Tensor<T> &out)
 template <typename OpFunc, typename AT, typename BT, typename OutT>
 __global__ void op_elemwise_binary_w_bcast_kernel(OpFunc f, Tensor<AT> in1, Tensor<BT> in2, Tensor<OutT> out)
 {
+    int row_num = in1.h;
+    int column_num = in1.w;
+    int cur_row = blockIdx.y * blockDim.y + threadIdx.y;
+    int cur_col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (cur_row < row_num && cur_col < column_num) {
+
+        AT a = Index(in1, cur_row, cur_col);
+        BT b;
+        if (in2.h == 1)
+        {
+            b = Index(in2, 0, cur_col);
+        }
+        else if (in2.w == 1)
+        {
+            b = Index(in2, cur_row, 0);
+        }
+        else
+        {
+            b = Index(in2, cur_row, cur_col);
+        }
+        Index(out, cur_row, cur_col) = f(a, b);
+    }
   //Lab-1: add your code here
 }
 
@@ -208,8 +260,13 @@ __global__ void op_elemwise_binary_w_bcast_kernel(OpFunc f, Tensor<AT> in1, Tens
 template <typename OpFunc, typename AT, typename BT, typename OutT>
 void op_elemwise_binary_w_bcast_gpu(OpFunc f, const Tensor<AT> &in1, const Tensor<BT> &in2, Tensor<OutT> &out)
 {
+    dim3 blockDim(ELEMWISE_BLOCK_DIM, ELEMWISE_BLOCK_DIM);  // 16x16 threads per block
+    dim3 gridDim((in1.w + ELEMWISE_BLOCK_DIM - 1) / ELEMWISE_BLOCK_DIM, (in1.h + ELEMWISE_BLOCK_DIM - 1) / ELEMWISE_BLOCK_DIM);
+    op_elemwise_binary_w_bcast_kernel<<<gridDim, blockDim>>>(f, in1, in2, out);
+    cudaDeviceSynchronize();
   //Lab-1: add your code here. Somewhere in this function
   //you need to call op_elemwise_binary_w_bcast_kernel<<<???, ???>>>(f, in1, in2, out);
+  
 }
 
 //This helper functions performs element wise operation on CPU with broadcasting.
@@ -333,6 +390,13 @@ void op_add(const Tensor<T> &a, const Tensor<T> &b, Tensor<T> &out)
   
 }
 
+//   c = Tensor(int32_t h_, int32_t w_, bool on_device_ = false)
+//         //Lab-1: add your code here (delete return 0)
+//         for ( row_idx = 0 ; row_idx < a.h  ; row_idx = row_idx + a.stride_h) {
+//         for ( column_idx = 0 ; column_idx < a.w  ; column_idx = column_idx + a.stride_w) {
+//                 = Index(a, row_idx, column_idx) + Index(b, row_idx, column_idx)
+//         }
+//         }
 
 
 //This operator performs element-wise addition of "a" and constant b
@@ -431,11 +495,14 @@ void op_const_fill(Tensor<T> &t, T value)
 {
     ConstFillFunc<T> f{value};
     if (t.on_device)
-    {
+    {   
+        // printf("op_const_fill. enter op_elemwise_unary_gpu.." );
+
         op_elemwise_unary_gpu(f, t, t);
     }
     else
     {
+        // printf("\n running op_elemwise_unary_cpu. \n" );
         op_elemwise_unary_cpu(f, t, t);
     }
 }
