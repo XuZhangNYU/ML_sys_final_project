@@ -21,8 +21,14 @@ T op_cross_entropy_loss(const Tensor<T> &logits, const Tensor<S> &targets,
     {
         throw std::runtime_error("op_cross_entropy_loss: device mismatch");
     }
-   int N = logits.h;
-    int threads = 128;
+    int N = logits.h;
+    int dim_logit = logits.w;
+    int threads;
+    if (dim_logit < 1024) {
+        threads = dim_logit;
+    } else {
+        threads = 1024;}
+        
     int blocks = (N + threads - 1) / threads;
 
     T zero = 0;
@@ -30,7 +36,6 @@ T op_cross_entropy_loss(const Tensor<T> &logits, const Tensor<S> &targets,
     cudaMalloc(&d_loss_sum, sizeof(T));
     cudaMemcpy(d_loss_sum, &zero, sizeof(T), cudaMemcpyHostToDevice);
 
-    // Launch CUDA kernel
     cross_entropy_kernel<<<blocks, threads>>>(
         logits,
         targets,
@@ -47,10 +52,7 @@ T op_cross_entropy_loss(const Tensor<T> &logits, const Tensor<S> &targets,
     // Return average loss
     return total_loss / static_cast<T>(N);
     }
-    //Lab-1: please add your code here
-    //You need to define separate GPU kernel function(s) and launch them here
-    //In order to calculate d_logits, you should derive what its values should be 
-    //symbolically.
+ 
    
 
 
@@ -67,23 +69,17 @@ __global__ void cross_entropy_kernel(
     int C = logits.w;   // num classes
     int label = Index(targets, i, 0);
 
-    // max logit for numerical stability
-    T max_val = Index(logits, i, 0);
-    for(int j = 1; j < C; j++) {
-        T v = Index(logits, i, j);
-        if(v > max_val) max_val = v;
-    }
-
-    // Compute denominator
     T sum_exp = 0;
     for(int j = 0; j < C; j++) {
-        sum_exp += exp(Index(logits, i, j) - max_val);
+        sum_exp += exp(Index(logits, i, j));
+
     }
 
     // Compute probabilities and gradient
     T loss_i = 0;
     for(int j = 0; j < C; j++){
-        T p = exp(Index(logits, i, j) - max_val) / sum_exp;
+        T p = exp(Index(logits, i, j)) / sum_exp;
+
         T y = (j == label) ? 1.0f : 0.0f;
         Index(d_logits, i, j) = (p - y) / logits.h; // divide by batch size
 
@@ -91,7 +87,5 @@ __global__ void cross_entropy_kernel(
             loss_i = -log(p);
         }
     }
-
-    // Atomic add loss for this sample
     atomicAdd(loss_sum, loss_i);
 }
