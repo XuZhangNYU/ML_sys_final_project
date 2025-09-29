@@ -101,8 +101,7 @@ void op_reduction_gpu(OpFunc f, const Tensor<T> &in, Tensor<T> &out, Tensor<IT> 
 
   //Lab-1: add your code here. You need to launch either op_reduction_kernel_colwise or op_reduction_kernel_rowwise
   //depending on the output shape 
-    int threads = ELEMWISE_BLOCK_DIM;
-
+    int threads;
     // op_elemwise_unary_kernel<<<gridDim, blockDim>>>(f, t, out);
     // if ((out.w == 1) && (out.h == 1)) {
     //     Tensor<int> temp{in.h, 1, true};
@@ -113,10 +112,20 @@ void op_reduction_gpu(OpFunc f, const Tensor<T> &in, Tensor<T> &out, Tensor<IT> 
     //     blocks = (in.w + threads - 1) / threads;
     //     op_reduction_kernel_rowwise<<<blocks, threads>>>(f, temp, out, out_index, get_index);
     if ((out.w <= 1) && (in.w > 1)) {
+        if (in.w > 1024) { 
+            threads = 1024; 
+        } else { 
+            threads = in.w; }
+
         int blocks = (in.h + threads - 1) / threads;
         // printf("doing column wise reduction");
         op_reduction_kernel_colwise<<<blocks, threads>>>(f, in, out, out_index, get_index);
     } else {
+        if (in.h > 1024) { 
+            threads = 1024; 
+        } else { 
+            threads = in.h; }
+
         int blocks = (in.w + threads - 1) / threads;
         // printf("doing row wise reduction");
 
