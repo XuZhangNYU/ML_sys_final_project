@@ -1,0 +1,4 @@
+/home/xz4863/scratch/BigDataMLSys/kernel_code/build/CMakeFiles/bten.dir
+/home/xz4863/scratch/BigDataMLSys/kernel_code/build/CMakeFiles/test.dir
+/home/xz4863/scratch/BigDataMLSys/kernel_code/build/CMakeFiles/edit_cache.dir
+/home/xz4863/scratch/BigDataMLSys/kernel_code/build/CMakeFiles/rebuild_cache.dir
