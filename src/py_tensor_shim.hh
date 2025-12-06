@@ -344,8 +344,14 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
     .def_property_readonly("T", &Self::transpose)
     .def("__getitem__", &Self::getitem)
     .def("__repr__", &Self::repr)
+    // Handled 4 d case by out.t.true_h = me.t.true_h; out.t.true_w = me.t.true_w;
     .def("__add__", [](const Self &me, const Self &other) {
       PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
+      // Copy metadata from 'me' (assuming shapes match)
+      out.t.b = me.t.b; out.t.d = me.t.d;
+      out.t.true_h = me.t.true_h; out.t.true_w = me.t.true_w;
+      out.t.stride_b = me.t.stride_b; out.t.stride_d = me.t.stride_d;
+      
       op_add<T>(me.t, other.t, out.t);
       return out;
     }, py::arg("other"))
@@ -378,6 +384,15 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
       PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
       op_relu<T>(me.t, out.t);
       return out;
+    })
+    .def("gelu", [](const Self &me) {
+        PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
+        // Copy metadata for 4D support
+        out.t.b = me.t.b; out.t.d = me.t.d; 
+        out.t.true_h = me.t.true_h; out.t.true_w = me.t.true_w;
+        
+        op_gelu<T>(me.t, out.t);
+        return out;
     })
     .def("relu_back", [](const Self &me, const Self &dout) {
       PyTensor<T> din(me.t.h, me.t.w, me.t.on_device);
@@ -415,11 +430,27 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
     // --- NEW BINDINGS FOR ATTENTION ---
     
     // Softmax (Row-wise only for now)
+
+    // --- CORRECTED SOFTMAX BINDING ---
     .def("softmax", [](const Self &me) {
+        // 1. Create Output (Allocates Flattened 2D memory)
         PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
+        
+        // 2. CRITICAL: Copy 4D Metadata from Input
+        out.t.b = me.t.b;
+        out.t.d = me.t.d;
+        out.t.true_h = me.t.true_h;
+        out.t.true_w = me.t.true_w;
+        // Also copy strides if necessary, though Constructor usually handles h/w strides.
+        // For safety, recalculate 4D strides based on new shape if dimensions changed, 
+        // but for Softmax (shape preserving), we can just copy or rely on class logic.
+        out.t.stride_b = me.t.stride_b;
+        out.t.stride_d = me.t.stride_d;
+
+        // 3. Run Kernel
         op_softmax<T>(me.t, out.t);
         return out;
-    }, "Computes row-wise softmax.")
+    }, "Computes row-wise softmax (Preserves 4D Shape).")
 
     // Batched Matrix Multiplication
     // Usage: A.bmm(B, batch_count, m, n, k)

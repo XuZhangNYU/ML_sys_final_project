@@ -6,6 +6,7 @@
 #include <curand.h>
 #include <sstream>
 #include <stdexcept>
+#include <cmath>
 
 #define ELEMWISE_BLOCK_DIM 32 // thread block has 32x32 threads
 
@@ -134,6 +135,37 @@ public:
       
     }
 };
+
+
+
+// Constants for GELU approximation
+// 0.7978845608 = sqrt(2.0 / M_PI)
+#define GELU_SCALING_FACTOR 0.7978845608f
+
+template <typename T>
+class GeluFunc
+{
+public:
+    __host__ __device__ T operator()(T x)
+    {
+        // Formula: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+        T cube = x * x * x;
+        T inner = GELU_SCALING_FACTOR * (x + 0.044715f * cube);
+        return 0.5f * x * (1.0f + tanh(inner));
+    }
+};
+
+// helper function to launch it (copy-paste your op_relu pattern)
+template <typename T>
+void op_gelu(const Tensor<T> &t, Tensor<T> &out)
+{
+    GeluFunc<T> f;
+    if (t.on_device) {
+        op_elemwise_unary_gpu(f, t, out);
+    } else {
+        op_elemwise_unary_cpu(f, t, out);
+    }
+}
 
 //This functor returns a constant value
 // it is used to fill a tensor with constant values
