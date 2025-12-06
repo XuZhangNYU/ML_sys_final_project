@@ -1,3 +1,13 @@
+# Final Project
+
+The repo is developed based on lab 1, so the readme is from that. Compile in the same way as lab1. 
+Compare with lab2 code, there are several major changes: 1. Added 4d tensor availability. You can query 4d tensor in the way similar to pytorch tensor, see the test cases for more details. You can find the updated 4d tensor implementation in /src/utils/tensor.cuh and /src/py_tensor_shim.hh.
+
+2. Added a better matmul kernel called bmm which is capable of handling 4d tensors. implementation in /src/ops/op_mm.cuh and /src/py_tensor_shim.hh.
+3. created the test cases for testing them. the test cases is located in /test_case.py
+
+# Below is the lab 1 readme
+   ___________________________________________________________________________________________________
 # Lab-1: Implementing basic tensor operators on GPUs.
 
 The goal of this lab is two-fold. One, we want to demonstrate the abstraction of tensors and tensor operations.
