@@ -137,3 +137,172 @@ void op_bmm(const Tensor<T>& A, const Tensor<T>& B, Tensor<T>& C)
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) printf("BMM Error: %s\n", cudaGetErrorString(err));
 }
+
+
+// Generic Kernel: Swaps Axis 1 and Axis 2 (0-indexed: 0, 2, 1, 3)
+// Works for: [B, S, H, D] -> [B, H, S, D]
+// AND for:   [B, H, S, D] -> [B, S, H, D]
+template <typename T>
+__global__ void permute_0213_kernel(Tensor<T> in, Tensor<T> out) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_elements = out.b * out.d * out.true_h * out.true_w;
+
+    if (idx < total_elements) {
+        // 1. Decode OUTPUT Linear Index -> (b, d, h, w)
+        // We traverse the OUTPUT linearly for coalesced writes.
+        // "d" is dim 1, "h" is dim 2 in the output tensor structure.
+        
+        int temp = idx;
+        int w_idx = temp % out.true_w; temp /= out.true_w; // Dim 3
+        int h_idx = temp % out.true_h; temp /= out.true_h; // Dim 2
+        int d_idx = temp % out.d;      temp /= out.d;      // Dim 1
+        int b_idx = temp;                                  // Dim 0
+
+        // 2. Map to INPUT (Swap d and h indices)
+        // Logic: We want to grab the value that WAS at (b, h, d, w)
+        // So we use:
+        // - b_idx for Batch
+        // - h_idx for Dim 1 (Input's D stride)
+        // - d_idx for Dim 2 (Input's H stride)
+        // - w_idx for Dim 3
+        
+        // Use the Tensor class's stored strides!
+        long long src_offset = 
+            b_idx * in.stride_b + 
+            h_idx * in.stride_d +  // <--- Use h_idx for D-stride
+            d_idx * in.stride_h +  // <--- Use d_idx for H-stride
+            w_idx * in.stride_w;
+
+        out.rawp[idx] = in.rawp[in.offset + src_offset];
+    }
+}
+
+template <typename T>
+void op_permute_0213(const Tensor<T>& in, Tensor<T>& out) {
+    int total = in.b * in.d * in.true_h * in.true_w;
+    int threads = 256;
+    int blocks = (total + threads - 1) / threads;
+    permute_0213_kernel<<<blocks, threads>>>(in, out);
+}
+
+
+// Permute 0, 2, 3, 1 Kernel (For K)
+// In:  [B, Seq, Heads, Dim]
+// Out: [B, Heads, Dim, Seq]
+template <typename T>
+__global__ void permute_0231_kernel(Tensor<T> in, Tensor<T> out) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_elements = out.b * out.d * out.true_h * out.true_w; // Use output total
+
+    if (idx < total_elements) {
+        // 1. Decode OUTPUT indices [b, h, d, s] from linear 'idx'
+        // Output Shape: [B, Heads, Dim, Seq]
+        // Stride logic for decoding is based on OUTPUT shape
+        
+        int s_dim = out.true_w; // Last dim (Seq)
+        int d_dim = out.true_h; // 2nd last (Dim)
+        int h_dim = out.d;      // 3rd last (Heads)
+        
+        int temp = idx;
+        int s_idx = temp % s_dim; temp /= s_dim; // Seq
+        int m_idx = temp % d_dim; temp /= d_dim; // Dim
+        int h_idx = temp % h_dim; temp /= h_dim; // Heads
+        int b_idx = temp;                        // Batch
+
+        // 2. Map to INPUT indices [b, s, h, d]
+        // Input Shape: [B, Seq, Heads, Dim]
+        // We need to calculate offset: b*stride_b + s*stride_s + h*stride_h + m*stride_m
+        
+        // Input Dimension Sizes
+        int in_dim_size = in.true_w;  // Dim
+        int in_head_size = in.true_h; // Heads
+        // int in_seq_size = in.d;    // Seq (Not needed for stride calc, only size)
+
+        // CORRECT Input Strides
+        int stride_dim = 1;
+        int stride_head = in_dim_size;
+        int stride_seq  = in_head_size * in_dim_size; // FIX: Heads * Dim
+        int stride_batch = in.d * stride_seq;         // Seq * (Heads * Dim)
+
+        long long src_offset = 
+            (long long)b_idx * stride_batch +
+            (long long)s_idx * stride_seq +
+            (long long)h_idx * stride_head +
+            (long long)m_idx * stride_dim;
+
+        out.rawp[idx] = in.rawp[in.offset + src_offset];
+    }
+}
+
+template <typename T>
+void op_permute_0231(const Tensor<T>& in, Tensor<T>& out) {
+    int total = out.b * out.d * out.true_h * out.true_w;
+    int threads = 256;
+    int blocks = (total + threads - 1) / threads;
+    permute_0231_kernel<<<blocks, threads>>>(in, out);
+}
+
+template <typename T>
+__global__ void causal_mask_kernel(Tensor<T> w, T scale) {
+    // w shape: [Batch, Heads, Seq, Seq]
+    // We parallelize over every element
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Flattened dimensions
+    int total_elements = w.b * w.d * w.true_h * w.true_w;
+    if (idx >= total_elements) return;
+
+    // Decode indices to find row/col in the Sequence matrix
+    // Stride of last dim (Seq) is 1
+    int col = idx % w.true_w; 
+    int row = (idx / w.true_w) % w.true_h; 
+
+    // 1. Scale
+    T val = w.rawp[idx] * scale;
+
+    // 2. Causal Mask Logic
+    // We want only lower triangular (row >= col).
+    // If row < col, it's future token -> Mask it (-1e10)
+    if (col > row) {
+        val = -1e10f;
+    }
+
+    w.rawp[idx] = val;
+}
+
+template <typename T>
+void op_causal_mask(Tensor<T>& w, float scale) {
+    int total = w.b * w.d * w.true_h * w.true_w;
+    int threads = 256;
+    int blocks = (total + threads - 1) / threads;
+    causal_mask_kernel<<<blocks, threads>>>(w, (T)scale);
+}
+
+// Kernel to Split [Rows, 3*Dim] -> 3 * [Rows, Dim]
+template <typename T>
+__global__ void split_qkv_kernel(Tensor<T> in, Tensor<T> q, Tensor<T> k, Tensor<T> v) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x; // Col in Q/K/V (0..Dim-1)
+    
+    if (row < q.h && col < q.w) {
+        int dim = q.w; // 768
+        
+        // Input layout: [Row, 3*Dim]
+        // Q is 0..Dim, K is Dim..2Dim, V is 2Dim..3Dim
+        
+        Index(q, row, col) = Index(in, row, col);
+        Index(k, row, col) = Index(in, row, col + dim);
+        Index(v, row, col) = Index(in, row, col + 2*dim);
+    }
+
+
+}
+
+template <typename T>
+void op_split_qkv(Tensor<T> in, Tensor<T> q, Tensor<T> k, Tensor<T> v) {
+    // int total = in.b * in.d * in.true_h * in.true_w;
+    dim3 block(16, 16);
+    dim3 grid((q.w + 15) / 16, (q.h + 15) / 16);
+    split_qkv_kernel<<<grid, block>>>(in, q, k, v);
+}
+

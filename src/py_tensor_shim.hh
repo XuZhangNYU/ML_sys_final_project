@@ -357,6 +357,9 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
     }, py::arg("other"))
     .def("__add__", [](const Self &me, T scalar) {
       PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
+      out.t.b = me.t.b; out.t.d = me.t.d;
+      out.t.true_h = me.t.true_h; out.t.true_w = me.t.true_w;
+      out.t.stride_b = me.t.stride_b; out.t.stride_d = me.t.stride_d;
       op_add<T>(me.t, scalar, out.t);
       return out;
     }, py::arg("scalar"))
@@ -367,16 +370,25 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
     }, py::arg("other"))
     .def("__mul__", [](const Self &me, const Self &other) {
       PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
+      out.t.b = me.t.b; out.t.d = me.t.d;
+      out.t.true_h = me.t.true_h; out.t.true_w = me.t.true_w;
+      out.t.stride_b = me.t.stride_b; out.t.stride_d = me.t.stride_d;
       op_multiply<T>(me.t, other.t, out.t);
       return out;
     }, py::arg("other"))
     .def("__mul__", [](const Self &me, T scalar) {
       PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
+      out.t.b = me.t.b; out.t.d = me.t.d;
+      out.t.true_h = me.t.true_h; out.t.true_w = me.t.true_w;
+      out.t.stride_b = me.t.stride_b; out.t.stride_d = me.t.stride_d;
       op_multiply<T>(me.t, scalar, out.t);
       return out;
     }, py::arg("scalar"))
     .def("__eq__", [](const Self &me, const Self &other) {
       PyTensor<uint32_t> out(me.t.h, me.t.w, me.t.on_device);
+      out.t.b = me.t.b; out.t.d = me.t.d;
+      out.t.true_h = me.t.true_h; out.t.true_w = me.t.true_w;
+      out.t.stride_b = me.t.stride_b; out.t.stride_d = me.t.stride_d;
       op_equal<T>(me.t, other.t, out.t);
       return out;
     }, py::arg("other"))
@@ -451,7 +463,31 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
         op_softmax<T>(me.t, out.t);
         return out;
     }, "Computes row-wise softmax (Preserves 4D Shape).")
+    .def("view", [](const Self &me, int b, int d, int h, int w) {
+        // Validation: Ensure total elements match
+        size_t new_size = (size_t)b * d * h * w;
+        size_t old_size = (size_t)me.t.b * me.t.d * me.t.true_h * me.t.true_w;
+        // Adjust old size calculation if it was 2D
+        if (me.t.b == 1 && me.t.d == 1) old_size = (size_t)me.t.h * me.t.w;
 
+        if (new_size != old_size) {
+             throw std::runtime_error("View size mismatch.");
+        }
+
+        // Create new View (Shares pointer!)
+        // Note: For safety in Python, maybe return a copy or handle refcounting carefully.
+        // For this lab, let's return a NEW tensor that shares the memory pointer?
+        // NO, simpler: Just return a new tensor copy for safety to avoid double-free issues
+        // with your current smart pointer setup.
+        
+        PyTensor<T> out(b, d, h, w, me.t.on_device);
+        if (me.t.on_device) {
+             cudaMemcpy(out.t.rawp, me.t.rawp, new_size * sizeof(T), cudaMemcpyDeviceToDevice);
+        } else {
+             std::memcpy(out.t.rawp, me.t.rawp, new_size * sizeof(T));
+        }
+        return out;
+    }, "Reshape/View tensor (Returns a Copy with new shape)")
     // Batched Matrix Multiplication
     // Usage: A.bmm(B, batch_count, m, n, k)
     // We assume the user has flattened the tensors to 2D before calling this
@@ -477,6 +513,67 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
         op_bmm<T>(me.t, other.t, out.t);
         
         return out;
-    }, py::arg("other"), "Batched Matrix Multiplication (Auto-inferred shapes)");
+    }, py::arg("other"), "Batched Matrix Multiplication (Auto-inferred shapes)")
+    .def("permute_0213", [](const Self &me) {
+        // Input: [B, Seq, Heads, Dim] (Logically)
+        // Output: [B, Heads, Seq, Dim]
+        // Note: We create output with swapped dims for Metadata
+        // Input 'me' has h=Seq, d=Heads. Output should swap them.
+        
+        PyTensor<T> out(me.t.b, me.t.true_h, me.t.d, me.t.true_w, me.t.on_device);
+        // Note the swap: out.d = me.h, out.h = me.d
+        
+        op_permute_0213<T>(me.t, out.t);
+        return out;
+    })
+    .def("causal_mask", [](const Self &me, float scale) {
+        // In-place modification is fine for masking usually, but let's copy to be safe/functional
+        PyTensor<T> out(me.t.b, me.t.d, me.t.true_h, me.t.true_w, me.t.on_device);
+        cudaMemcpy(out.t.rawp, me.t.rawp, sizeof(T)*me.t.h*me.t.w, cudaMemcpyDeviceToDevice);
+        
+        op_causal_mask<T>(out.t, scale);
+        return out;
+    }, py::arg("scale"))
+    // .def("split_qkv", [](const Self &me) {
+    //     int rows = me.t.h;
+    //     int dim = me.t.w / 3;
+    //     PyTensor<T> q(rows, dim, true);
+    //     PyTensor<T> k(rows, dim, true);
+    //     PyTensor<T> v(rows, dim, true);
+    //     op_split_qkv(me.t, q.t, k.t, v.t);
+    //     return py::make_tuple(q, k, v);
+    // })
 
+    // 1. Split QKV Binding
+    .def("split_qkv", [](const Self &me, int n_head, int head_dim) {
+        // Input: [Batch*Seq, 3*Hidden]
+        int rows = me.t.h;
+        int hidden_dim = n_head * head_dim;
+        
+        // Create 3 output tensors: [Batch*Seq, Hidden]
+        // Note: These are 2D for now, we reshaped them in Python later
+        PyTensor<T> q(rows, hidden_dim, me.t.on_device);
+        PyTensor<T> k(rows, hidden_dim, me.t.on_device);
+        PyTensor<T> v(rows, hidden_dim, me.t.on_device);
+        
+        op_split_qkv(me.t, q.t, k.t, v.t);
+        
+        return py::make_tuple(q, k, v);
+    }, py::arg("n_head"), py::arg("head_dim"))
+
+    // 2. Permute 0231 Binding (For K)
+    .def("permute_0231", [](const Self &me) {
+        // Input Metadata: b=B, d=Seq, true_h=Heads, true_w=Dim
+        
+        // Output Metadata: [B, Heads, Dim, Seq]
+        int out_b = me.t.b;
+        int out_d = me.t.true_h; // Heads
+        int out_h = me.t.true_w; // Dim
+        int out_w = me.t.d;      // Seq
+        
+        PyTensor<T> out(out_b, out_d, out_h, out_w, me.t.on_device);
+        op_permute_0231<T>(me.t, out.t);
+        return out;
+    });
+  
 }

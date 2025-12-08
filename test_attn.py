@@ -84,9 +84,9 @@ class OriginalAttention(nn.Module):
         w = torch.matmul(q, k)
         if self.scale:
             w = w / math.sqrt(v.size(-1))
-        nd, ns = w.size(-2), w.size(-1)
-        b = self.bias[:, :, ns-nd:ns, :ns]
-        w = w * b - 1e10 * (1 - b)
+        # nd, ns = w.size(-2), w.size(-1)
+        # b = self.bias[:, :, ns-nd:ns, :ns]
+        # w = w * b - 1e10 * (1 - b)
         w = nn.Softmax(dim=-1)(w)
         return torch.matmul(w, v)
 
@@ -111,6 +111,7 @@ class OriginalAttention(nn.Module):
         value = self.split_heads(value)
         a = self._attn(query, key, value)
         a = self.merge_heads(a)
+        return a
         a = self.c_proj(a)
         return a
 
@@ -154,7 +155,7 @@ class CustomAttention(nn.Module):
         
         # Convert back for masking (Python side)
         w = self._to_torch(w_bten, (bs, heads, seq_len, seq_len), q.device)
-
+        
         if self.scale:
             w = w / math.sqrt(v.size(-1))
         
@@ -206,49 +207,156 @@ class CustomAttention(nn.Module):
         new_x_shape = x.size()[:-2] + (x.size(-2) * x.size(-1),)
         return x.view(*new_x_shape)
 
+
+
+class BtenAttention:
+    def __init__(self, nx, n_ctx, config, scale=False):
+        self.n_head = config.n_head
+        self.split_size = nx
+        self.scale = scale
+        self.head_dim = nx // self.n_head
+        self.nx = nx
+        
+        # Weights (Initialized in import_weights)
+        self.c_attn_w = None; self.c_attn_b = None
+        self.c_proj_w = None; self.c_proj_b = None
+        
+        # Bias Mask (Pre-loaded)
+        bias_np = np.tril(np.ones((1, 1, n_ctx, n_ctx), dtype=np.float32))
+        self.bias_mask = bten.TensorF(1, 1, n_ctx, n_ctx, True)
+        self.bias_mask.copy_from_numpy(bias_np)
+
+    def import_weights(self, torch_attn_module):
+        """Robust weight import handling Conv1D (No Transpose) vs Linear (Transpose)."""
+        with torch.no_grad():
+            # 1. c_attn
+            if isinstance(torch_attn_module.c_attn, Conv1D):
+                print("Importing c_attn from Conv1D (Direct copy)...")
+                w1 = torch_attn_module.c_attn.weight.contiguous().cpu().numpy()
+            else:
+                print("Importing c_attn from Linear (Transpose)...")
+                w1 = torch_attn_module.c_attn.weight.t().contiguous().cpu().numpy()
+            b1 = torch_attn_module.c_attn.bias.contiguous().cpu().numpy()
+
+            # 2. c_proj
+            if isinstance(torch_attn_module.c_proj, Conv1D):
+                print("Importing c_proj from Conv1D (Direct copy)...")
+                w2 = torch_attn_module.c_proj.weight.contiguous().cpu().numpy()
+            else:
+                print("Importing c_proj from Linear (Transpose)...")
+                w2 = torch_attn_module.c_proj.weight.t().contiguous().cpu().numpy()
+            b2 = torch_attn_module.c_proj.bias.contiguous().cpu().numpy()
+
+        # Load to Bten
+        self.c_attn_w = bten.TensorF(1, 1, w1.shape[0], w1.shape[1], True)
+        self.c_attn_w.copy_from_numpy(w1)
+        self.c_attn_b = bten.TensorF(1, 1, 1, b1.shape[0], True)
+        self.c_attn_b.copy_from_numpy(b1.reshape(1,-1))
+
+        self.c_proj_w = bten.TensorF(1, 1, w2.shape[0], w2.shape[1], True)
+        self.c_proj_w.copy_from_numpy(w2)
+        self.c_proj_b = bten.TensorF(1, 1, 1, b2.shape[0], True)
+        self.c_proj_b.copy_from_numpy(b2.reshape(1,-1))
+
+    def forward(self, x):
+        # ... (Linear Proj) ...
+        B = x.shape[0]; S = x.shape[2]; Dim = x.shape[3]
+        
+        # 1. QKV Proj (Linear)
+        # Flatten x to [B*S, Dim] for Linear
+        x_flat = x.view(1, 1, B*S, Dim)
+
+        qkv = x_flat @ self.c_attn_w + self.c_attn_b
+        # qkv: [B*S, 3*Dim]
+        
+        # 1. Split
+        # Now q, k, v are [B*S, Dim]
+        
+        # 2. View as [B, Seq, Heads, HeadDim]
+        # We need to reshape so Permute understands the dims
+        B = x.shape[0]; S = x.shape[2]
+
+        # 3. Permute [B, S, H, D] -> [B, H, S, D]
+        q, k, v = qkv.split_qkv(self.n_head, self.head_dim)
+
+        # 2. Reshape to 4D [B, S, H, D]
+        q = q.view(B, S, self.n_head, self.head_dim)
+        k = k.view(B, S, self.n_head, self.head_dim)
+        v = v.view(B, S, self.n_head, self.head_dim)
+
+        # 3. Permute
+        q = q.permute_0213() # [B, H, S, D]
+        # k = k.permute_0213() # [B, H, S, D]
+        k = k.permute_0231() # [B, H, D, S] <--- Used 0231!
+        v = v.permute_0213() # [B, H, S, D]
+
+        # 4. Attention
+        print(q.shape, k.shape, v.shape)
+        w = q.bmm(k) # [B, H, S, S]
+        print("w", w.shape)
+        w = w * (1/math.sqrt(self.head_dim))
+      
+        # w = w.causal_mask(scale=1.0/math.sqrt(self.head_dim))
+        w = w.softmax()
+
+        print("w", w.shape)
+        print("v", v.shape)
+        a = w.bmm(v) # [B, H, S, D]
+        
+        # 5. Merge (Permute Back)
+        # [B, H, S, D] -> [B, S, H, D]
+        a = a.permute_0213() # Need inverse kernel
+        
+        # Flatten
+        a_flat = a.view(1, 1, B*S, self.nx)
+        return a_flat
+        out = a_flat @ self.c_proj_w + self.c_proj_b
+        return out
+
 # ---------------------------------------------------------
 # 3. Test Harness
 # ---------------------------------------------------------
 def compare_models():
     torch.manual_seed(42)
-    device = torch.device("cuda")
     
-    # 1. Setup
-    C = GPT2Config(n_embd=128, n_head=4, n_ctx=64)
-    seq_len = 32
-    batch_size = 2
+    n_embd = 768
+    config = GPT2Config(n_embd=n_embd, n_head=12, n_ctx=1024)
     
-    print(f"Comparison: Batch={batch_size}, Seq={seq_len}, HeadDim={128//4}")
-
-    # 2. Instantiate
-    orig_model = OriginalAttention(C.n_embd, C.n_ctx, C, scale=True).to(device)
-    custom_model = CustomAttention(C.n_embd, C.n_ctx, C, scale=True).to(device)
-
-    # 3. TRANSPOSE & SYNC WEIGHTS (The Critical Step)
-    # Conv1D weights: [n_inputs, n_outputs]
-    # Linear weights: [n_outputs, n_inputs]
-    with torch.no_grad():
-        # Transpose Weight, Copy Bias
-        custom_model.c_attn.weight.data = orig_model.c_attn.weight.t().contiguous()
-        custom_model.c_attn.bias.data = orig_model.c_attn.bias.clone()
-        
-        custom_model.c_proj.weight.data = orig_model.c_proj.weight.t().contiguous()
-        custom_model.c_proj.bias.data = orig_model.c_proj.bias.clone()
-
-    # 4. Run
-    x = torch.randn(batch_size, seq_len, C.n_embd, device=device)
+    # 1. Models
+    ref_model = OriginalAttention(n_embd, 1024, config, scale=True).cuda().eval()
+    my_model = BtenAttention(n_embd, 1024, config, scale=True)
     
-    orig_out = orig_model(x)
-    custom_out = custom_model(x)
-
-    # 5. Check
-    diff = (orig_out - custom_out).abs().max().item()
-    print(f"Max Difference: {diff:.8f}")
+    # 2. Import Weights
+    # This will trigger "Importing from Conv1D"
+    my_model.import_weights(ref_model)
     
-    if torch.allclose(orig_out, custom_out, atol=1e-4, rtol=1e-4):
-        print("✅ SUCCESS: Custom Attention matches Original GPT-2 Logic!")
+    # 3. Input
+    x_torch = torch.randn(2, 32, n_embd).cuda()
+    
+    # 4. Run Ref
+    y_ref = ref_model(x_torch)
+    
+    # 5. Run Custom
+    x_bten = bten.TensorF(2, 1, 32, n_embd, True)
+    x_bten.copy_from_numpy(x_torch.detach().cpu().numpy())
+    
+    y_bten = my_model.forward(x_bten)
+    print(y_ref.shape)
+    print(y_bten.to_numpy().shape)
+    # 6. Compare
+    y_bten_np = y_bten.to_numpy()
+    # y_bten_np = y_bten.to_numpy().reshape(2, 32, n_embd)
+
+    y_ref_np = y_ref.detach().cpu().numpy()
+    
+    diff = np.abs(y_ref_np - y_bten_np).max() 
+    # + np.abs(bb.to_numpy() - b.detach().cpu().numpy()).max() + np.abs(cc.to_numpy() - c.detach().cpu().numpy()).max()
+    print(f"\nMax Difference: {diff:.8f}")
+    
+    if diff < 1e-4:
+        print("✅ SUCCESS!")
     else:
-        print("❌ FAILURE: Mismatch detected.")
+        print("❌ FAILED")
 
 if __name__ == "__main__":
     compare_models()
