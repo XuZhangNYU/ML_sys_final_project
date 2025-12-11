@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 #include "utils/check_error.cuh"
 #include "utils/tensor.cuh"
+// #include <math.h>
+
 
 template <typename AT, typename BT, typename OT>
 static void ensure_mm_shape_device(const Tensor<AT> &a, const Tensor<BT> &b, const Tensor<OT> &out)
@@ -306,3 +308,69 @@ void op_split_qkv(Tensor<T> in, Tensor<T> q, Tensor<T> k, Tensor<T> v) {
     split_qkv_kernel<<<grid, block>>>(in, q, k, v);
 }
 
+
+// Gpu kernel: LayerNorm per row
+template <typename T>
+__global__ void op_layernorm_kernel(Tensor<T> x,
+                                    Tensor<T> gamma,
+                                    Tensor<T> beta,
+                                    Tensor<T> out,
+                                    float eps)
+{
+    int row = blockIdx.x;       
+    int w   = x.w;       
+
+    // 1. compute mean for this row
+    T mean = 0;
+    for (int j = 0; j < w; j++) {
+        mean += Index(x, row, j);
+    }
+    mean /= (float) T(w);
+
+    // 2. variance
+    T var = 0;
+    for (int j = 0; j < w; j++) {
+        T diff = Index(x, row, j) - mean;
+        var += diff * diff;
+    }
+    var /= T(w);
+// 2. Use rsqrtf (explicit float version)
+    float var_f = static_cast<float>(var);
+    float inv_std_f = rsqrtf(var_f + eps);
+    
+    // 3. Cast back to T (If T is float, this does nothing. If T is int, it truncates)
+    T inv_std = static_cast<T>(inv_std_f);
+
+    // 3. normalize, scale, shift
+    for (int j = 0; j < w; j++) {
+        T norm   = (Index(x, row, j) - mean) * inv_std;
+        T scaled = norm * Index(gamma, 0, j) + Index(beta, 0, j);
+        Index(out, row, j) = scaled;
+    }
+}
+
+template <typename T>
+void op_layernorm(const Tensor<T> &x,
+                  const Tensor<T> &gamma,
+                  const Tensor<T> &beta,
+                  Tensor<T> &out,
+                  float eps = 1e-5f)
+{
+    if (gamma.h != 1 || beta.h != 1 || gamma.w != x.w || beta.w != x.w) {
+        throw std::runtime_error("LayerNorm: gamma/beta shape mismatch");
+    }
+    if (!x.on_device) {
+        throw std::runtime_error("LayerNorm requires CUDA tensor");
+    }
+
+    int blocks = x.h;
+    int threads = 1;   
+
+    op_layernorm_kernel<<<blocks, threads>>>(x, gamma, beta, out, eps);
+    cudaDeviceSynchronize();
+
+    auto err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("[layernorm] CUDA ERROR: %s\n", cudaGetErrorString(err));
+    }
+}

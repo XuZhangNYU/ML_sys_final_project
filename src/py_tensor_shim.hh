@@ -113,27 +113,31 @@ public:
   // --- UPDATED: TO NUMPY ---
   // Returns 4D array if internal metadata exists, otherwise 2D
   py::array to_numpy() const {
-    // 1. Pull data to Host
-    Tensor<T> host_t(t.h, t.w, /*on_device=*/false);
-    if (t.on_device) {
-      t.toHost(host_t);
-    } else {
-      std::memcpy(host_t.rawp, t.rawp, sizeof(T) * t.h * t.w);
-    }
+      // ... (Existing copy to host logic) ...
+      Tensor<T> host_t(t.h, t.w, /*on_device=*/false);
+      if (t.on_device) { t.toHost(host_t); } 
+      else { std::memcpy(host_t.rawp, t.rawp, sizeof(T) * t.h * t.w); }
 
-    // 2. Determine Output Shape
-    // If we have 4D metadata, we return a 4D numpy array
-    if (t.b > 1 || t.d > 1) {
-        py::array_t<T> out({t.b, t.d, t.true_h, t.true_w});
-        std::memcpy(out.mutable_data(), host_t.rawp, sizeof(T) * t.h * t.w);
-        return out;
-    } else {
-        // Otherwise return standard 2D view
-        py::array_t<T> out({t.h, t.w});
-        std::memcpy(out.mutable_data(), host_t.rawp, sizeof(T) * t.h * t.w);
-        return out;
+      // Logic Switch
+      if (t.is_3d) {
+          // CASE 3D: Return [Batch, Seq, Dim]
+          // Internal structure is [B, 1, S, D]
+          py::array_t<T> out({t.b, t.true_h, t.true_w}); // Skip 'd'
+          std::memcpy(out.mutable_data(), host_t.rawp, sizeof(T) * t.h * t.w);
+          return out;
+      } 
+      else if (t.b > 1 || t.d > 1) {
+          // CASE 4D: Return [B, D, S, D]
+          py::array_t<T> out({t.b, t.d, t.true_h, t.true_w});
+          std::memcpy(out.mutable_data(), host_t.rawp, sizeof(T) * t.h * t.w);
+          return out;
+      } else {
+          // CASE 2D
+          py::array_t<T> out({t.h, t.w});
+          std::memcpy(out.mutable_data(), host_t.rawp, sizeof(T) * t.h * t.w);
+          return out;
+      }
     }
-  }
 
   void fill(T v) {
     op_const_fill(t, v);
@@ -325,13 +329,13 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
          py::arg("b"), py::arg("d"), py::arg("h"), py::arg("w"), py::arg("is_cuda")=true,
          "Create a 4D Tensor [Batch, Head, Seq, Dim]")
     .def_property_readonly("shape", [](const Self &me) {
-        if (me.t.b > 1 || me.t.d > 1) {
-            // If internal 4D metadata exists, return the 4D tuple
-            return py::make_tuple(me.t.b, me.t.d, me.t.true_h, me.t.true_w);
-        } else {
-            // Otherwise, return the standard 2D tuple (Flattened view)
-            return py::make_tuple(me.t.h, me.t.w);
-        }
+      if (me.t.is_3d) {
+          return py::make_tuple(me.t.b, me.t.true_h, me.t.true_w);
+      } else if (me.t.b > 1 || me.t.d > 1) {
+          return py::make_tuple(me.t.b, me.t.d, me.t.true_h, me.t.true_w);
+      } else {
+          return py::make_tuple(me.t.h, me.t.w);
+      }
     })
     .def_property_readonly("is_cuda", &Self::is_cuda)
     .def("to_numpy", &Self::to_numpy, "Copy the tensor to a NumPy array (host).")
@@ -474,6 +478,7 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
              throw std::runtime_error("View size mismatch.");
         }
 
+
         // Create new View (Shares pointer!)
         // Note: For safety in Python, maybe return a copy or handle refcounting carefully.
         // For this lab, let's return a NEW tensor that shares the memory pointer?
@@ -488,6 +493,26 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
         }
         return out;
     }, "Reshape/View tensor (Returns a Copy with new shape)")
+    .def("view_3d", [](const Self &me, int b, int s, int d) {
+      // Validate size
+      size_t new_size = (size_t)b * s * d;
+      size_t old_size = (size_t)me.t.b * me.t.d * me.t.true_h * me.t.true_w;
+      if (new_size != old_size) throw std::runtime_error("View size mismatch");
+
+      // Create a 4D tensor with Heads=1
+      PyTensor<T> out(b, 1, s, d, me.t.on_device);
+      
+      // Mark as 3D
+      out.t.is_3d = true;
+
+      // Copy data
+      if (me.t.on_device) {
+           cudaMemcpy(out.t.rawp, me.t.rawp, new_size * sizeof(T), cudaMemcpyDeviceToDevice);
+      } else {
+           std::memcpy(out.t.rawp, me.t.rawp, new_size * sizeof(T));
+      }
+      return out;
+      }, py::arg("b"), py::arg("s"), py::arg("d"), "View as 3D tensor [Batch, Seq, Dim]")
     // Batched Matrix Multiplication
     // Usage: A.bmm(B, batch_count, m, n, k)
     // We assume the user has flattened the tensors to 2D before calling this
@@ -574,6 +599,27 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
         PyTensor<T> out(out_b, out_d, out_h, out_w, me.t.on_device);
         op_permute_0231<T>(me.t, out.t);
         return out;
-    });
+    })
+
+    .def("layernorm", [](const Self &me,
+                         const PyTensor<T> &gamma,
+                         const PyTensor<T> &beta,
+                         float eps) {
+        // 1. Allocate flat buffer
+        PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
+
+        // 2. Copy 4D metadata
+        out.t.b        = me.t.b;
+        out.t.d        = me.t.d;
+        out.t.true_h   = me.t.true_h;
+        out.t.true_w   = me.t.true_w;
+        out.t.stride_b = me.t.stride_b;
+        out.t.stride_d = me.t.stride_d;
+
+        // 3. Call CUDA kernel wrapper
+        op_layernorm<T>(me.t, gamma.t, beta.t, out.t, eps);
+
+        return out;
+    }, py::arg("gamma"), py::arg("beta"), py::arg("eps") = 1e-5f);
   
 }

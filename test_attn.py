@@ -84,9 +84,9 @@ class OriginalAttention(nn.Module):
         w = torch.matmul(q, k)
         if self.scale:
             w = w / math.sqrt(v.size(-1))
-        # nd, ns = w.size(-2), w.size(-1)
-        # b = self.bias[:, :, ns-nd:ns, :ns]
-        # w = w * b - 1e10 * (1 - b)
+        nd, ns = w.size(-2), w.size(-1)
+        b = self.bias[:, :, ns-nd:ns, :ns]
+        w = w * b - 1e10 * (1 - b)
         w = nn.Softmax(dim=-1)(w)
         return torch.matmul(w, v)
 
@@ -111,7 +111,6 @@ class OriginalAttention(nn.Module):
         value = self.split_heads(value)
         a = self._attn(query, key, value)
         a = self.merge_heads(a)
-        return a
         a = self.c_proj(a)
         return a
 
@@ -294,9 +293,9 @@ class BtenAttention:
         print(q.shape, k.shape, v.shape)
         w = q.bmm(k) # [B, H, S, S]
         print("w", w.shape)
-        w = w * (1/math.sqrt(self.head_dim))
+        # w = w * (1/math.sqrt(self.head_dim))
       
-        # w = w.causal_mask(scale=1.0/math.sqrt(self.head_dim))
+        w = w.causal_mask(scale=1.0/math.sqrt(self.head_dim))
         w = w.softmax()
 
         print("w", w.shape)
@@ -309,9 +308,18 @@ class BtenAttention:
         
         # Flatten
         a_flat = a.view(1, 1, B*S, self.nx)
-        return a_flat
-        out = a_flat @ self.c_proj_w + self.c_proj_b
-        return out
+        print("aflat", a_flat.shape)
+        print("cprojw", self.c_proj_w.shape)
+
+        out = a_flat.bmm(self.c_proj_w) + self.c_proj_b
+        return out.view_3d(B, S, self.nx)
+
+def _to_torch_3d(t_bten, device):
+    # t_bten is [B, 1, S, D]
+    arr_4d = t_bten.to_numpy()
+    # Numpy reshape [B, 1, S, D] -> [B, S, D]
+    arr_3d = arr_4d.reshape(arr_4d.shape[0], arr_4d.shape[2], arr_4d.shape[3])
+    return torch.from_numpy(arr_3d).to(device)
 
 # ---------------------------------------------------------
 # 3. Test Harness
@@ -341,6 +349,7 @@ def compare_models():
     x_bten.copy_from_numpy(x_torch.detach().cpu().numpy())
     
     y_bten = my_model.forward(x_bten)
+    print("ref vs bten")
     print(y_ref.shape)
     print(y_bten.to_numpy().shape)
     # 6. Compare

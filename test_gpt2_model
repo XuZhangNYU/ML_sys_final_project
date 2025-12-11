@@ -1,0 +1,936 @@
+import torch
+import torch.nn as nn
+import math
+import numpy as np
+import copy
+
+import sys
+import os
+
+from pathlib import Path
+
+
+def add_dir_to_path_pathlib(directory_path_str):
+    target_dir = Path(directory_path_str).resolve()
+    if target_dir.is_dir():
+        if str(target_dir) not in sys.path:
+            sys.path.append(str(target_dir))
+            print(f"Added '{target_dir}' to sys.path.")
+        else:
+            print(f"'{target_dir}' is already in sys.path.")
+    else:
+        print(f"Error: Directory not found at '{target_dir}'")
+
+# Example usage:
+add_dir_to_path_pathlib('/home/xz4863/scratch/BigDataMLSys/final_project/pytorch_gpt2')
+
+from GPT2.model import (GPT2LMHeadModel)
+from GPT2.utils import load_weight
+from GPT2.config import GPT2Config
+from GPT2.sample import sample_sequence
+from GPT2.encoder import get_encoder
+
+# --- STEP 1: SETUP PATHS (MUST BE FIRST) ---
+# Get the directory of this script (src)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# We need to find the 'build' folder. 
+# Since your script is in `kernel_code/src/test_case.py`, 
+# and build is likely in `BigDataMLSys/build`, we need to go up two levels.
+# We will check both ../build and ../../build just to be safe.
+possible_paths = [
+    os.path.join(script_dir, "build"),       # Check kernel_code/build
+    os.path.join(script_dir, "..", "build")  # Check BigDataMLSys/build
+]
+
+found = False
+for path in possible_paths:
+    abs_path = os.path.abspath(path)
+    if os.path.exists(abs_path):
+        if abs_path not in sys.path:
+            sys.path.append(abs_path)
+        print(f"Found build directory at: {abs_path}")
+        print(f"Contents: {os.listdir(abs_path)}")
+        found = True
+        break
+
+if not found:
+    print(f"CRITICAL WARNING: Could not find 'build' directory in {possible_paths}")
+
+# ---------------------------------------------------------
+# 0. Setup Custom CUDA Extension
+# ---------------------------------------------------------
+try:
+    import bten
+    print("✅ 'bten' CUDA extension imported successfully.")
+except ImportError:
+    print("❌ ERROR: Could not import 'bten'.")
+    exit(1)
+
+
+# ---------------------------------------------------------
+# ---------------------------------------------------------
+print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+user_input = input("?????????????????? Have you changed path to your own paths for Pytorch GPT2 model and Bten build kernel?????????????????? : Delete this user-input requesting code after you have edited the paths \n")
+user_input = input("?????????????????? Have you changed path to your own paths for Pytorch GPT2 model and Bten build kernel?????????????????? : Delete this user-input requesting code after you have edited the paths \n")
+user_input = input("?????????????????? Have you changed path to your own paths for Pytorch GPT2 model and Bten build kernel?????????????????? : Delete this user-input requesting code after you have edited the paths \n")
+user_input = input("?????????????????? Have you changed path to your own paths for Pytorch GPT2 model and Bten build kernel?????????????????? : Delete this user-input requesting code after you have edited the paths \n")
+user_input = input("?????????????????? Have you changed path to your own paths for Pytorch GPT2 model and Bten build kernel?????????????????? : Delete this user-input requesting code after you have edited the paths \n")
+print()
+print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+print("")
+# ---------------------------------------------------------
+# ---------------------------------------------------------
+
+
+class GPT2Config(object):
+    def __init__(
+            self,
+            vocab_size_or_config_json_file=50257,
+            n_positions=1024,
+            n_ctx=1024,
+            n_embd=768,
+            n_layer=12,
+            n_head=12,
+            layer_norm_epsilon=1e-5,
+            initializer_range=0.02,
+    ):
+        self.vocab_size = vocab_size_or_config_json_file
+        self.n_ctx = n_ctx
+        self.n_positions = n_positions
+        self.n_embd = n_embd
+        self.n_layer = n_layer
+        self.n_head = n_head
+        self.layer_norm_epsilon = layer_norm_epsilon
+        self.initializer_range = initializer_range
+
+
+class BtenAttention:
+    def __init__(self, nx, n_ctx, config, scale=False):
+        self.n_head = config.n_head
+        self.split_size = nx
+        self.scale = scale
+        self.head_dim = nx // self.n_head
+        self.nx = nx
+        
+        # Weights (Initialized in import_weights)
+        self.c_attn_w = None; self.c_attn_b = None
+        self.c_proj_w = None; self.c_proj_b = None
+        
+        # Bias Mask (Pre-loaded)
+        bias_np = np.tril(np.ones((1, 1, n_ctx, n_ctx), dtype=np.float32))
+        self.bias_mask = bten.TensorF(1, 1, n_ctx, n_ctx, True)
+        self.bias_mask.copy_from_numpy(bias_np)
+
+    def import_weights(self, torch_attn_module):
+        """Robust weight import handling Conv1D (No Transpose) vs Linear (Transpose)."""
+        with torch.no_grad():
+            # 1. c_attn
+            if isinstance(torch_attn_module.c_attn, Conv1D):
+                print("Importing c_attn from Conv1D (Direct copy)...")
+                w1 = torch_attn_module.c_attn.weight.contiguous().cpu().numpy()
+            else:
+                print("Importing c_attn from Linear (Transpose)...")
+                w1 = torch_attn_module.c_attn.weight.t().contiguous().cpu().numpy()
+            b1 = torch_attn_module.c_attn.bias.contiguous().cpu().numpy()
+
+            # 2. c_proj
+            if isinstance(torch_attn_module.c_proj, Conv1D):
+                print("Importing c_proj from Conv1D (Direct copy)...")
+                w2 = torch_attn_module.c_proj.weight.contiguous().cpu().numpy()
+            else:
+                print("Importing c_proj from Linear (Transpose)...")
+                w2 = torch_attn_module.c_proj.weight.t().contiguous().cpu().numpy()
+            b2 = torch_attn_module.c_proj.bias.contiguous().cpu().numpy()
+
+        # Load to Bten
+        self.c_attn_w = bten.TensorF(1, 1, w1.shape[0], w1.shape[1], True)
+        self.c_attn_w.copy_from_numpy(w1)
+        self.c_attn_b = bten.TensorF(1, 1, 1, b1.shape[0], True)
+        self.c_attn_b.copy_from_numpy(b1.reshape(1,-1))
+
+        self.c_proj_w = bten.TensorF(1, 1, w2.shape[0], w2.shape[1], True)
+        self.c_proj_w.copy_from_numpy(w2)
+        self.c_proj_b = bten.TensorF(1, 1, 1, b2.shape[0], True)
+        self.c_proj_b.copy_from_numpy(b2.reshape(1,-1))
+
+    def forward(self, x):
+        # ... (Linear Proj) ...
+        B = x.shape[0]; S = x.shape[2]; Dim = x.shape[3]
+        
+        # 1. QKV Proj (Linear)
+        # Flatten x to [B*S, Dim] for Linear
+        x_flat = x.view(1, 1, B*S, Dim)
+
+        qkv = x_flat.bmm(self.c_attn_w) + self.c_attn_b
+        # qkv: [B*S, 3*Dim]
+        
+        # 1. Split
+        # Now q, k, v are [B*S, Dim]
+        
+        # 2. View as [B, Seq, Heads, HeadDim]
+        # We need to reshape so Permute understands the dims
+        B = x.shape[0]; S = x.shape[2]
+
+        # 3. Permute [B, S, H, D] -> [B, H, S, D]
+        q, k, v = qkv.split_qkv(self.n_head, self.head_dim)
+
+        # 2. Reshape to 4D [B, S, H, D]
+        q = q.view(B, S, self.n_head, self.head_dim)
+        k = k.view(B, S, self.n_head, self.head_dim)
+        v = v.view(B, S, self.n_head, self.head_dim)
+
+        # 3. Permute
+        q = q.permute_0213() # [B, H, S, D]
+        # k = k.permute_0213() # [B, H, S, D]
+        k = k.permute_0231() # [B, H, D, S] <--- Used 0231!
+        v = v.permute_0213() # [B, H, S, D]
+
+        # 4. Attention
+        # print(q.shape, k.shape, v.shape)
+        w = q.bmm(k) # [B, H, S, S]
+        # print("w", w.shape)
+        # w = w * (1/math.sqrt(self.head_dim))
+      
+        w = w.causal_mask(scale=1.0/math.sqrt(self.head_dim))
+        w = w.softmax()
+
+        # print("w", w.shape)
+        # print("v", v.shape)
+        a = w.bmm(v) # [B, H, S, D]
+        
+        # 5. Merge (Permute Back)
+        # [B, H, S, D] -> [B, S, H, D]
+        a = a.permute_0213() # Need inverse kernel
+        
+        # Flatten
+        a_flat = a.view(1, 1, B*S, self.nx)
+        # print("aflat", a_flat.shape)
+        # print("cprojw", self.c_proj_w.shape)
+
+        out = a_flat.bmm(self.c_proj_w) + self.c_proj_b
+        return out.view_3d(B, S, self.nx)
+
+def _to_torch_3d(t_bten, device):
+    # t_bten is [B, 1, S, D]
+    arr_4d = t_bten.to_numpy()
+    # Numpy reshape [B, 1, S, D] -> [B, S, D]
+    arr_3d = arr_4d.reshape(arr_4d.shape[0], arr_4d.shape[2], arr_4d.shape[3])
+    return torch.from_numpy(arr_3d).to(device)
+
+class BtenMLP:
+    def __init__(self, n_state, config):
+        self.nx = config.n_embd
+        self.n_state = n_state
+        self.c_fc_w = None
+        self.c_fc_b = None
+        self.c_proj_w = None
+        self.c_proj_b = None
+
+    def import_weights(self, pytorch_mlp_module):
+        with torch.no_grad():
+            # Check source type (Conv1D vs Linear)
+            # Conv1D weights are [In, Out]. Linear are [Out, In].
+            
+            if isinstance(pytorch_mlp_module.c_fc, Conv1D):
+                # Conv1D is ALREADY [In, Out]. No Transpose needed!
+                print("Importing from Conv1D (Original GPT2 style)...")
+                w1 = pytorch_mlp_module.c_fc.weight.contiguous().detach().cpu().numpy()
+                w2 = pytorch_mlp_module.c_proj.weight.contiguous().detach().cpu().numpy()
+            elif isinstance(pytorch_mlp_module.c_fc, nn.Linear):
+                # Linear is [Out, In]. TRANSPOSE REQUIRED.
+                print("Importing from nn.Linear...")
+                w1 = pytorch_mlp_module.c_fc.weight.t().contiguous().detach().cpu().numpy()
+                w2 = pytorch_mlp_module.c_proj.weight.t().contiguous().detach().cpu().numpy()
+            else:
+                raise ValueError("Unknown layer type")
+
+            b1 = pytorch_mlp_module.c_fc.bias.contiguous().detach().cpu().numpy()
+            b2 = pytorch_mlp_module.c_proj.bias.contiguous().detach().cpu().numpy()
+
+        print(f"  Weights W1 Shape: {w1.shape} (Expected: {self.nx}, {self.n_state})")
+        print(f"  Weights W2 Shape: {w2.shape} (Expected: {self.n_state}, {self.nx})")
+
+        # Load into Bten
+        self.c_fc_w = bten.TensorF(1, 1, w1.shape[0], w1.shape[1], True)
+        self.c_fc_w.copy_from_numpy(w1)
+        
+        self.c_fc_b = bten.TensorF(1, 1, 1, b1.shape[0], True)
+        self.c_fc_b.copy_from_numpy(b1.reshape(1, -1))
+
+        self.c_proj_w = bten.TensorF(1, 1, w2.shape[0], w2.shape[1], True)
+        self.c_proj_w.copy_from_numpy(w2)
+        
+        self.c_proj_b = bten.TensorF(1, 1, 1, b2.shape[0], True)
+        self.c_proj_b.copy_from_numpy(b2.reshape(1, -1))
+
+    def forward(self, x):
+        # x input is [Batch, 1, Seq, Dim] or similar
+        # We flatten to [Batch*Seq, Dim]
+        rows = x.shape[0] * x.shape[1] * x.shape[2]
+        dim = x.shape[3]
+        
+        # Validation
+        if dim != self.nx:
+            raise RuntimeError(f"Input dim {dim} != Model dim {self.nx}")
+
+        x_flat = x.view(1, 1, rows, dim)
+        
+        # FC
+        h = x_flat.bmm(self.c_fc_w)
+        h = h + self.c_fc_b 
+        
+        # Act
+        h = h.gelu()
+        
+        # Proj
+        h2 = h.bmm(self.c_proj_w)
+        h2 = h2 + self.c_proj_b
+        
+        # Restore shape
+        return h2.view(x.shape[0], x.shape[1], x.shape[2], self.nx)
+
+
+class BtenLayerNorm:
+    def __init__(self, n_embd, eps=1e-5):
+        self.eps = eps
+        self.gamma = None
+        self.beta = None
+        self.n_embd = n_embd
+
+    def import_weights(self, torch_ln):
+        with torch.no_grad():
+            g = torch_ln.weight.detach().cpu().numpy().reshape(1, self.n_embd)
+            b = torch_ln.bias.detach().cpu().numpy().reshape(1, self.n_embd)
+        
+        self.gamma = bten.TensorF(1, self.n_embd, True)
+        self.gamma.copy_from_numpy(g)
+        self.beta = bten.TensorF(1, self.n_embd, True)
+        self.beta.copy_from_numpy(b)
+
+    def forward(self, x):
+        # x is [B, 1, S, D] or [B*S, D]. 
+        # LayerNorm works row-wise, so dimensions don't strictly matter 
+        # as long as the last dim is D.
+        return x.layernorm(self.gamma, self.beta, self.eps)
+
+class BtenBlock:
+    def __init__(self, n_ctx, config, scale=False):
+        self.ln_1 = BtenLayerNorm(config.n_embd, eps=1e-5) # GPT2 Default epsilon
+        self.attn = BtenAttention(config.n_embd, n_ctx, config, scale)
+        self.ln_2 = BtenLayerNorm(config.n_embd, eps=1e-5)
+        self.mlp = BtenMLP(4 * config.n_embd, config)
+
+    def import_weights(self, torch_block):
+        self.ln_1.import_weights(torch_block.ln_1)
+        self.attn.import_weights(torch_block.attn)
+        self.ln_2.import_weights(torch_block.ln_2)
+        self.mlp.import_weights(torch_block.mlp)
+
+    def forward(self, x):
+        # x: [B, 1, S, D]
+        
+        # 1. Attention Branch
+        # Note: We need a copy of x for the residual connection?
+        # Your Add kernel might support out-of-place addition returning a new tensor.
+        # Let's assume x.layernorm() returns a new tensor.
+        
+        normed_x = self.ln_1.forward(x)
+        attn_out = self.attn.forward(normed_x)
+        
+        # Residual: x = x + attn_out
+        x = x + attn_out 
+        
+        # 2. MLP Branch
+        normed_x2 = self.ln_2.forward(x)
+        mlp_out = self.mlp.forward(normed_x2)
+        
+        # Residual: x = x + mlp_out
+        x = x + mlp_out
+        
+        return x
+
+class BtenGPT2Model:
+    def __init__(self, config):
+        self.config = config
+        self.wte = None # Numpy Array [Vocab, Dim]
+        self.wpe = None # Numpy Array [Ctx, Dim]
+        self.blocks = [BtenBlock(config.n_ctx, config, scale=True) for _ in range(config.n_layer)]
+        self.ln_f = BtenLayerNorm(config.n_embd, eps=1e-5)
+
+    def import_weights(self, torch_model):
+        with torch.no_grad():
+            self.wte = torch_model.wte.weight.detach().cpu().numpy()
+            self.wpe = torch_model.wpe.weight.detach().cpu().numpy()
+        
+        for i, block in enumerate(self.blocks):
+            print(f"Importing Block {i}...")
+            block.import_weights(torch_model.h[i])
+            
+        self.ln_f.import_weights(torch_model.ln_f)
+
+    def forward(self, input_ids):
+        # input_ids: list of ints or numpy array [Batch, Seq]
+        if not isinstance(input_ids, np.ndarray):
+            input_ids = np.array(input_ids)
+            
+        B, S = input_ids.shape
+        # print("input_id shape", input_ids.shape)
+        # 1. Embeddings (CPU / Numpy)
+        # Token Embeddings
+        # Gather logic: wte[input_ids]
+        tok_emb = self.wte[input_ids] # [B, S, Dim]
+        # print("tok_emb shape", tok_emb.shape)
+        # Positional Embeddings
+        positions = np.arange(S)
+        pos_emb = self.wpe[positions] # [S, Dim]
+        
+        # Sum
+        hidden_np = tok_emb + pos_emb # Broadcasting [B, S, Dim] + [S, Dim]
+        # print("hidden_np shape", hidden_np.shape)
+        # 2. Move to Bten [B, 1, S, Dim]
+        x = bten.TensorF(B, 1, S, self.config.n_embd, True)
+        # print("x shape before instanciation", x.shape)
+
+        x.copy_from_numpy(hidden_np.astype(np.float32))
+        # print("x shape", x.shape)
+        # 3. Run Blocks
+        for i, block in enumerate(self.blocks):
+            x = block.forward(x)
+            
+        # 4. Final LayerNorm
+        x = self.ln_f.forward(x)
+        
+        # 5. Output View
+        return x
+
+class BtenLMHead:
+    def __init__(self, config):
+        self.n_embd = config.n_embd
+        self.decoder_w = None 
+
+    def set_embeddings_weights(self, wte_numpy):
+        # ... (Same as before: Transpose and Load) ...
+        # print("Tying weights: converting wte [V, D] to decoder [D, V]...")
+        w_transposed = wte_numpy.T 
+        D, V = w_transposed.shape
+        self.decoder_w = bten.TensorF(1, 1, D, V, True)
+        self.decoder_w.copy_from_numpy(np.ascontiguousarray(w_transposed))
+
+    def forward(self, hidden_state):
+        # hidden_state: [B, 1, S, Dim]
+        # print("LMHead forward input shape:", hidden_state.shape)
+        # print("Decoder weights shape:", self.decoder_w.shape)
+        B = hidden_state.shape[0]
+        S = hidden_state.shape[2]
+        Dim = hidden_state.shape[3]
+        
+        # 1. Flatten Batch and Seq (The "View" Trick)
+        # This makes the tensor look like [1, 1, Rows, Dim] to C++
+        x_flat = hidden_state.view(1, 1, B*S, Dim)
+        
+        # 2. Run BMM (Now both sides have b=1, d=1)
+        # [1, 1, TotalRows, Dim] @ [1, 1, Dim, Vocab]
+        logits_flat = x_flat.bmm(self.decoder_w)
+        
+        # 3. Restore Shapes
+        Vocab = self.decoder_w.shape[-1]
+        return logits_flat.view(B, 1, S, Vocab)
+
+class BtenGPT2LMHeadModel:
+    def __init__(self, config):
+        self.transformer = BtenGPT2Model(config) # Your existing class
+        self.lm_head = BtenLMHead(config)
+        self.config = config
+
+    def import_weights(self, torch_model):
+        # 1. Import Transformer weights
+        print("Importing Transformer...")
+        self.transformer.import_weights(torch_model.transformer)
+        
+        # 2. Tie Weights (Load wte into lm_head)
+        # We access the numpy wte we just stored in the transformer
+        print("Tying Embedding Weights...")
+        self.lm_head.set_embeddings_weights(self.transformer.wte)
+
+    def forward(self, input_ids):
+        # 1. Run Transformer
+        # hidden_states: [B, 1, S, Dim]
+        hidden_states = self.transformer.forward(input_ids)
+        # 2. Run Head
+        # lm_logits: [B, 1, S, Vocab]
+        lm_logits = self.lm_head.forward(hidden_states)
+        return lm_logits
+
+import torch.nn.functional as F
+
+def top_k_logits_numpy(logits, k):
+    if k == 0:
+        return logits
+    
+    # logits is 1D array [Vocab]
+    # Find the k-th largest value
+    ind = np.argpartition(logits, -k)[-k:]
+    top_k_vals = logits[ind]
+    min_val = top_k_vals.min()
+    
+    # Mask everything smaller than min_val
+    return np.where(logits < min_val, -1e10, logits)
+
+
+# ---------------------------------------------------------
+# 1. Pure Numpy Helpers (Replacing PyTorch)
+# ---------------------------------------------------------
+
+def softmax_numpy(x, axis=-1):
+    """Compute softmax values for each set of scores in x."""
+    # Numerical stability shift
+    x_max = np.max(x, axis=axis, keepdims=True)
+    e_x = np.exp(x - x_max)
+    return e_x / np.sum(e_x, axis=axis, keepdims=True)
+
+def top_k_logits_numpy(logits, k):
+    """
+    Masks everything but the top k logits.
+    logits: [Batch, Vocab]
+    """
+    if k == 0:
+        return logits
+    
+    # Check shape
+    if logits.ndim == 1:
+        # Single batch optimization
+        if k >= logits.size: return logits
+        # Find the k-th largest value (pivot)
+        # np.argpartition puts the k-th largest element at index -k
+        ind = np.argpartition(logits, -k)[-k:]
+        min_top_k = logits[ind].min()
+        return np.where(logits < min_top_k, -1e10, logits)
+    else:
+        # Batched version
+        # Iterate over batch because numpy argpartition axis logic is tricky for "values"
+        out = np.copy(logits)
+        for i in range(logits.shape[0]):
+            row = logits[i]
+            if k >= row.size: continue
+            ind = np.argpartition(row, -k)[-k:]
+            min_val = row[ind].min()
+            out[i] = np.where(row < min_val, -1e10, row)
+        return out
+
+def multinomial_sample_numpy(probs, num_samples=1):
+    """
+    probs: [Batch, Vocab] (normalized probabilities)
+    Returns: [Batch, num_samples] indices
+    """
+    batch_size = probs.shape[0]
+    result = np.zeros((batch_size, num_samples), dtype=np.int32)
+    
+    for i in range(batch_size):
+        p = probs[i]
+        # Normalize again just in case float precision drifted sum away from 1.0
+        p = p / p.sum() 
+        # Sample
+        result[i] = np.random.choice(len(p), size=num_samples, p=p)
+        
+    return result
+
+# ---------------------------------------------------------
+# 2. The Inference Loop (Pure Bten + Numpy)
+# ---------------------------------------------------------
+
+def sample_sequence_bten(model, length, start_token=None, batch_size=None, context=None, temperature=1.0, top_k=0, sample=True):
+    """
+    Generates text using ONLY bten (GPU) and Numpy (CPU).
+    No PyTorch allowed here!
+    """
+    
+    # 1. Prepare Context (Numpy)
+    if start_token is None:
+        assert context is not None
+        # context is list of token ids
+        # tile for batch: [Batch, Seq]
+        context = np.tile(context, (batch_size, 1)).astype(np.int32)
+    else:
+        assert context is None
+        context = np.full((batch_size, 1), start_token, dtype=np.int32)
+
+    # Current sequence buffer
+    prev = context 
+    
+    print(f"Generating {length} tokens (Pure Numpy/Bten)...")
+    
+    # 2. Generation Loop
+    for i in range(length):
+        # A. Forward Pass (Pure Bten/CUDA)
+        # Input: prev (Numpy array of int32)
+        # Bten's forward accepts numpy int array for embeddings
+        
+        # Note: model.forward returns a bten.TensorF [B, 1, S, Vocab]
+        logits_bten = model.forward(prev)
+        
+        # B. Get Last Token Logits -> CPU
+        # logits_bten shape: [Batch, 1, Seq, Vocab]
+        # We need the last timestep.
+        
+        logits_np = logits_bten.to_numpy() # 4D Numpy Array
+        
+        # Extract last timestep: [Batch, Vocab]
+        # Shape is [B, 1, Seq, Vocab] -> index [:, 0, -1, :]
+        next_token_logits = logits_np[:, 0, -1, :] 
+        
+        # C. Sampling Logic (Numpy)
+        # 1. Temperature
+        next_token_logits = next_token_logits / temperature
+        
+        # 2. Top-K Filter
+        if top_k > 0:
+            next_token_logits = top_k_logits_numpy(next_token_logits, top_k)
+            
+        # 3. Softmax (Probabilities)
+        probs = softmax_numpy(next_token_logits, axis=-1)
+        
+        # 4. Sample
+        if sample:
+            # Multinomial
+            next_token = multinomial_sample_numpy(probs, num_samples=1) # [Batch, 1]
+        else:
+            # Greedy (Argmax)
+            next_token = np.argmax(probs, axis=-1, keepdims=True) # [Batch, 1]
+            
+        # D. Append to sequence
+        # prev: [Batch, Seq], next_token: [Batch, 1]
+        prev = np.concatenate((prev, next_token), axis=1)
+        
+    return prev
+# ______________________________________________________________________-
+import torch.nn as nn
+from torch.nn.parameter import Parameter
+
+def gelu(x):
+    return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+
+class LayerNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-12):
+        """Construct a layernorm module in the TF style (epsilon inside the square root).
+        """
+        super(LayerNorm, self).__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.zeros(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, x):
+        u = x.mean(-1, keepdim=True)
+        s = (x - u).pow(2).mean(-1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.variance_epsilon)
+        return self.weight * x + self.bias
+
+class Conv1D(nn.Module):
+    def __init__(self, nf, nx):
+        super(Conv1D, self).__init__()
+        self.nf = nf
+        w = torch.empty(nx, nf)
+        nn.init.normal_(w, std=0.02)
+        self.weight = Parameter(w)
+        self.bias = Parameter(torch.zeros(nf))
+
+    def forward(self, x):
+        size_out = x.size()[:-1] + (self.nf,)
+        x = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
+        x = x.view(*size_out)
+        return x
+
+class Attention(nn.Module):
+    def __init__(self, nx, n_ctx, config, scale=False):
+        super(Attention, self).__init__()
+        n_state = nx  # in Attention: n_state=768 (nx=n_embd)
+        # [switch nx => n_state from Block to Attention to keep identical to TF implem]
+        assert n_state % config.n_head == 0
+        self.register_buffer("bias", torch.tril(torch.ones(n_ctx, n_ctx)).view(1, 1, n_ctx, n_ctx))
+        self.n_head = config.n_head
+        self.split_size = n_state
+        self.scale = scale
+        self.c_attn = Conv1D(n_state * 3, nx)
+        self.c_proj = Conv1D(n_state, nx)
+
+    def _attn(self, q, k, v):
+        w = torch.matmul(q, k)
+        if self.scale:
+            w = w / math.sqrt(v.size(-1))
+        nd, ns = w.size(-2), w.size(-1)
+        b = self.bias[:, :, ns-nd:ns, :ns]
+        w = w * b - 1e10 * (1 - b)
+        w = nn.Softmax(dim=-1)(w)
+        return torch.matmul(w, v)
+
+    def merge_heads(self, x):
+        x = x.permute(0, 2, 1, 3).contiguous()
+        new_x_shape = x.size()[:-2] + (x.size(-2) * x.size(-1),)
+        return x.view(*new_x_shape)  # in Tensorflow implem: fct merge_states
+
+    def split_heads(self, x, k=False):
+        new_x_shape = x.size()[:-1] + (self.n_head, x.size(-1) // self.n_head)
+        x = x.view(*new_x_shape)  # in Tensorflow implem: fct split_states
+        if k:
+            return x.permute(0, 2, 3, 1)  # (batch, head, head_features, seq_length)
+        else:
+            return x.permute(0, 2, 1, 3)  # (batch, head, seq_length, head_features)
+
+    def forward(self, x, layer_past=None):
+        x = self.c_attn(x)
+        query, key, value = x.split(self.split_size, dim=2)
+        query = self.split_heads(query)
+        key = self.split_heads(key, k=True)
+        value = self.split_heads(value)
+        if layer_past is not None:
+            past_key, past_value = layer_past[0].transpose(-2, -1), layer_past[1]  # transpose back cf below
+            key = torch.cat((past_key, key), dim=-1)
+            value = torch.cat((past_value, value), dim=-2)
+        present = torch.stack((key.transpose(-2, -1), value))  # transpose to have same shapes for stacking
+        a = self._attn(query, key, value)
+        a = self.merge_heads(a)
+        a = self.c_proj(a)
+        return a, present
+
+class MLP(nn.Module):
+    def __init__(self, n_state, config):  # in MLP: n_state=3072 (4 * n_embd)
+        super(MLP, self).__init__()
+        nx = config.n_embd
+        self.c_fc = Conv1D(n_state, nx)
+        self.c_proj = Conv1D(nx, n_state)
+        self.act = gelu
+
+    def forward(self, x):
+        h = self.act(self.c_fc(x))
+        h2 = self.c_proj(h)
+        return h2
+
+class Block(nn.Module):
+    def __init__(self, n_ctx, config, scale=False):
+        super(Block, self).__init__()
+        nx = config.n_embd
+        self.ln_1 = LayerNorm(nx, eps=config.layer_norm_epsilon)
+        self.attn = Attention(nx, n_ctx, config, scale)
+        self.ln_2 = LayerNorm(nx, eps=config.layer_norm_epsilon)
+        self.mlp = MLP(4 * nx, config)
+
+    def forward(self, x, layer_past=None):
+        a, present = self.attn(self.ln_1(x), layer_past=layer_past)
+        x = x + a
+        m = self.mlp(self.ln_2(x))
+        x = x + m
+        return x, present
+
+class GPT2Model(nn.Module):
+    def __init__(self, config):
+        super(GPT2Model, self).__init__()
+        self.n_layer = config.n_layer
+        self.n_embd = config.n_embd
+        self.n_vocab = config.vocab_size
+
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
+        self.wpe = nn.Embedding(config.n_positions, config.n_embd)
+        block = Block(config.n_ctx, config, scale=True)
+        self.h = nn.ModuleList([copy.deepcopy(block) for _ in range(config.n_layer)])
+        self.ln_f = LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
+
+    def set_embeddings_weights(self, model_embeddings_weights):
+        embed_shape = model_embeddings_weights.shape
+        self.decoder = nn.Linear(embed_shape[1], embed_shape[0], bias=False)
+        self.decoder.weight = model_embeddings_weights  # Tied weights
+
+    def forward(self, input_ids, position_ids=None, token_type_ids=None, past=None):
+        if past is None:
+            past_length = 0
+            past = [None] * len(self.h)
+        else:
+            past_length = past[0][0].size(-2)
+        if position_ids is None:
+            position_ids = torch.arange(past_length, input_ids.size(-1) + past_length, dtype=torch.long,
+                                        device=input_ids.device)
+            position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+
+        input_shape = input_ids.size()
+        input_ids = input_ids.view(-1, input_ids.size(-1))
+        position_ids = position_ids.view(-1, position_ids.size(-1))
+
+        inputs_embeds = self.wte(input_ids)
+        position_embeds = self.wpe(position_ids)
+        if token_type_ids is not None:
+            token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1))
+            token_type_embeds = self.wte(token_type_ids)
+        else:
+            token_type_embeds = 0
+        hidden_states = inputs_embeds + position_embeds + token_type_embeds
+        presents = []
+        for block, layer_past in zip(self.h, past):
+            hidden_states, present = block(hidden_states, layer_past)
+            presents.append(present)
+        hidden_states = self.ln_f(hidden_states)
+        output_shape = input_shape + (hidden_states.size(-1),)
+        return hidden_states.view(*output_shape), presents
+
+class GPT2LMHead(nn.Module):
+    def __init__(self, model_embeddings_weights, config):
+        super(GPT2LMHead, self).__init__()
+        self.n_embd = config.n_embd
+        self.set_embeddings_weights(model_embeddings_weights)
+
+    def set_embeddings_weights(self, model_embeddings_weights):
+        embed_shape = model_embeddings_weights.shape
+        self.decoder = nn.Linear(embed_shape[1], embed_shape[0], bias=False)
+        self.decoder.weight = model_embeddings_weights  # Tied weights
+
+    def forward(self, hidden_state):
+        # Truncated Language modeling logits (we remove the last token)
+        # h_trunc = h[:, :-1].contiguous().view(-1, self.n_embd)
+        lm_logits = self.decoder(hidden_state)
+        return lm_logits
+
+class GPT2LMHeadModel(nn.Module):
+    def __init__(self, config):
+        super(GPT2LMHeadModel, self).__init__()
+        self.transformer = GPT2Model(config)
+        self.lm_head = GPT2LMHead(self.transformer.wte.weight, config)
+
+    def set_tied(self):
+        """ Make sure we are sharing the embeddings
+        """
+        self.lm_head.set_embeddings_weights(self.transformer.wte.weight)
+
+    def forward(self, input_ids, position_ids=None, token_type_ids=None, lm_labels=None, past=None):
+        hidden_states, presents = self.transformer(input_ids, position_ids, token_type_ids, past)
+        lm_logits = self.lm_head(hidden_states)
+        if lm_labels is not None:
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), lm_labels.view(-1))
+            return loss
+        return lm_logits, presents
+#__________________________________________________________________
+
+
+# Reuse classes from previous steps (BtenAttention, BtenMLP, BtenLayerNorm, BtenBlock, BtenGPT2Model)
+# ... (Paste the class definitions here or import them) ...
+
+def test_end_to_end():
+    torch.manual_seed(42)
+    
+    # 1. Config (Small)
+    config = GPT2Config(n_embd=128, n_head=4, n_ctx=64)
+    # config.n_layer = 2 # Test with 2 layers
+    
+    print(f"Testing GPT-2: Layers={config.n_layer}, Embd={config.n_embd}")
+
+    # 2. Reference Model
+    ref_model = GPT2Model(config).cuda().eval()
+    
+    # 3. Custom Model
+    my_model = BtenGPT2Model(config)
+    my_model.import_weights(ref_model)
+    
+    # 4. Input
+    input_ids = torch.randint(0, 100, (2, 32)).cuda() # [Batch=2, Seq=32]
+    
+    # 5. Run Ref
+    with torch.no_grad():
+        y_ref, _ = ref_model(input_ids) # [B, S, Dim]
+    
+    # 6. Run Custom
+    # Move ids to CPU for embedding lookup
+    ids_np = input_ids.cpu().numpy()
+    y_bten = my_model.forward(ids_np)
+    
+    # 7. Compare
+    y_bten_np = y_bten.to_numpy().reshape(y_ref.shape)
+    y_ref_np = y_ref.cpu().numpy()
+    
+    diff = np.abs(y_ref_np - y_bten_np).max()
+    print(f"Max Difference: {diff:.6f}")
+    
+    if diff < 1e-4:
+        print("✅ SUCCESS: End-to-End GPT-2 Match!")
+    else:
+        print("❌ FAILURE: Mismatch.")
+
+if __name__ == "__main__":
+    # test_end_to_end()
+    # Dummy Test if no weights available
+    print("Running Dummy End-to-End Test...")
+    
+    # config = GPT2Config(n_embd=128, n_head=4, n_ctx=64)
+    
+    # Create fake weights via PyTorch model
+
+    enc = get_encoder()
+    config = GPT2Config()
+    state_dict = torch.load('/scratch/xz4863/pretrained_models/gpt2/pytorch_model.bin', map_location='cpu' if not torch.cuda.is_available() else None)
+    model = BtenGPT2LMHeadModel(config)
+
+    ref_model = GPT2LMHeadModel(config)
+    ref_model = load_weight(ref_model, state_dict)
+    ref_model.to('cuda')
+    ref_model.eval()
+
+    text_list = ["In a shocking finding, scientists discovered a herd of unicorns living in a remote, " , "a a a a a a a a a a a a a a a a a a"]
+    print(text_list)
+    context_tokens = enc.encode("In a shocking finding, scientists discovered a herd of unicorns living in a remote, " )
+    nsamples = 1
+    batch_size = 1
+    generated = 0
+    generated_bten = 111123
+    unconditional = 'store_true'
+    temperature = 0.1
+    top_k = 1
+    length = 100
+
+
+
+
+    model.import_weights(ref_model)
+    
+    # Fake Context
+    # context = [101, 202, 303]
+    
+    for _ in range(nsamples // batch_size):
+        out_bten = sample_sequence_bten(
+            model=model, length=length,
+            context=context_tokens,
+            start_token=None,
+            batch_size=3,
+            temperature=temperature, top_k=top_k
+        )
+        out_bten = out_bten[:, len(context_tokens):].tolist()
+        for i in range(batch_size):
+            generated_bten += 1
+            text_bten = enc.decode(out_bten[i])
+            print("=" * 40 + " Bten Implement " + str(generated_bten) + " " + "=" * 40)
+            print(text_bten)
+
+    print("Reference Output: ")
+    print(" *****************************  ")
+    print(" *****************************  ")
+    print(" *****************************  ")
+
+    for _ in range(nsamples // batch_size):
+        out = sample_sequence(
+            model=ref_model, length=length,
+            context=context_tokens,
+            start_token=None,
+            batch_size=1,
+            temperature=temperature, top_k=top_k, device='cuda'
+        )
+        out = out[:, len(context_tokens):].tolist()
+        for i in range(batch_size):
+            generated += 1
+            text = enc.decode(out[i])
+            print("=" * 40 + " SAMPLE " + str(generated) + " " + "=" * 40)
+            print(text)
+
+    print()
+    print(" *****************************  ")
+    print(" *****************************  ")
+    print("Do two outputs match?")
+    print(text == text_bten)
+    print(" *****************************  ")
+    print(" *****************************  ")
+    print()

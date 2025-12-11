@@ -47,7 +47,8 @@ public:
     // 4D Strides
     int32_t stride_b; 
     int32_t stride_d;
-
+    // NEW FLAG
+    bool is_3d; 
     T *rawp;
     std::shared_ptr<T> ref;
     bool on_device;
@@ -56,7 +57,7 @@ public:
     Tensor() : h(0), w(0), stride_h(0), stride_w(0), offset(0), 
                b(1), d(1), true_h(0), true_w(0), 
                stride_b(0), stride_d(0), // Init new strides
-               rawp(nullptr), on_device(false) 
+               rawp(nullptr), on_device(false),  is_3d(false) 
     {
         ref = std::shared_ptr<T>(rawp, cpuDeleter<T>());
     }
@@ -65,7 +66,7 @@ public:
     Tensor(int32_t h_, int32_t w_, bool on_device_ = false)
         : h(h_), w(w_), stride_h(w_), stride_w(1), offset(0),
           b(1), d(1), true_h(h_), true_w(w_),
-          on_device(on_device_)
+          on_device(on_device_),  is_3d(false)
     {
         // Even in 2D, calculate theoretical 4D strides for safety
         stride_d = h_ * w_; 
@@ -73,12 +74,14 @@ public:
         allocate(h * w);
     }
 
+
+
     // --- Constructor 2: New 4D ---
     Tensor(int32_t b_, int32_t d_, int32_t h_, int32_t w_, bool on_device_ = false)
         : b(b_), d(d_), true_h(h_), true_w(w_),
           // Flatten 2D view:
           h(b_ * d_ * h_), w(w_), 
-          stride_h(w_), stride_w(1), offset(0),
+          stride_h(w_), stride_w(1), offset(0), is_3d(false),
           on_device(on_device_)
     {
         // Calculate 4D Strides
