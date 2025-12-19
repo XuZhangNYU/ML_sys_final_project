@@ -6,10 +6,7 @@ import sys
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# We need to find the 'build' folder. 
-# Since your script is in `kernel_code/src/test_case.py`, 
-# and build is likely in `BigDataMLSys/build`, we need to go up two levels.
-# We will check both ../build and ../../build just to be safe.
+
 possible_paths = [
     os.path.join(script_dir, "build"),       # Check kernel_code/build
     os.path.join(script_dir, "..", "build")  # Check BigDataMLSys/build
@@ -29,14 +26,11 @@ for path in possible_paths:
 
 try:
     import bten
-    print("✅ 'bten' CUDA extension imported successfully.")
+    print("v 'bten' CUDA extension imported successfully.")
 except ImportError:
-    print("❌ ERROR: Could not import 'bten'.")
+    print("x ERROR: Could not import 'bten'.")
     exit(1)
 
-# ---------------------------------------------------------
-# 1. GPT-2 Specific LayerNorm (Reference)
-# ---------------------------------------------------------
 class LayerNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-12):
         """Construct a layernorm module in the TF style (epsilon inside the square root).
@@ -52,9 +46,7 @@ class LayerNorm(nn.Module):
         x = (x - u) / torch.sqrt(s + self.variance_epsilon)
         return self.weight * x + self.bias
 
-# ---------------------------------------------------------
-# 2. Test Harness
-# ---------------------------------------------------------
+#
 def test_layernorm():
     torch.manual_seed(42)
     device = torch.device("cuda")
@@ -102,9 +94,9 @@ def test_layernorm():
     print(f"Max Difference: {diff:.8f}")
 
     if diff < 1e-4:
-        print("✅ SUCCESS: LayerNorm matches GPT-2 Implementation!")
+        print("SUccESS: LayerNorm matches GPT-2 Implementation!")
     else:
-        print("❌ FAILURE: Outputs diverge.")
+        print("FAIl: Outputs diverge.")
         print("Ref sample:", y_ref_np[0, 0, :5])
         print("Bten sample:", y_bten_np[0, 0, :5])
 

@@ -8,7 +8,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/home/xz4863/scratch/BigDataMLSys/kernel_code/src/test.cu" "CMakeFiles/test.dir/src/test.cu.o" "gcc" "CMakeFiles/test.dir/src/test.cu.o.d"
+  "/home/xz4863/scratch/BigDataMLSys/final_project_submit/src/test.cu" "CMakeFiles/test.dir/src/test.cu.o" "gcc" "CMakeFiles/test.dir/src/test.cu.o.d"
   )
 
 # Targets to which this target links.

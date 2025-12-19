@@ -4,7 +4,7 @@
 # compile CUDA with /ext3/miniconda3/envs/scivid_deepmind/bin/nvcc
 CUDA_DEFINES = -DPYBIND11_DETAILED_ERROR_MESSAGES -Dbten_EXPORTS
 
-CUDA_INCLUDES = -I/home/xz4863/scratch/BigDataMLSys/kernel_code -I/home/xz4863/scratch/BigDataMLSys/kernel_code/src -I/home/xz4863/scratch/BigDataMLSys/kernel_code/utils -isystem=/ext3/miniconda3/envs/scivid_deepmind/include/python3.12 -isystem=/ext3/miniconda3/envs/scivid_deepmind/include -isystem=/ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include
+CUDA_INCLUDES = -I/home/xz4863/scratch/BigDataMLSys/final_project_submit -I/home/xz4863/scratch/BigDataMLSys/final_project_submit/src -I/home/xz4863/scratch/BigDataMLSys/final_project_submit/utils -isystem=/ext3/miniconda3/envs/scivid_deepmind/include/python3.12 -isystem=/ext3/miniconda3/envs/scivid_deepmind/include -isystem=/ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include
 
 CUDA_FLAGS =  --generate-code=arch=compute_50,code=[sm_50] --generate-code=arch=compute_52,code=[sm_52] --generate-code=arch=compute_60,code=[sm_60] --generate-code=arch=compute_61,code=[sm_61] --generate-code=arch=compute_70,code=[sm_70] --generate-code=arch=compute_75,code=[sm_75] --generate-code=arch=compute_80,code=[sm_80] --generate-code=arch=compute_86,code=[sm_86] --generate-code=arch=compute_89,code=[sm_89] --generate-code=arch=compute_90,code=[sm_90] --generate-code=arch=compute_100,code=[sm_100] --generate-code=arch=compute_101,code=[sm_101] --generate-code=arch=compute_103,code=[sm_103] --generate-code=arch=compute_120,code=[sm_120] --generate-code=arch=compute_121,code=[compute_121,sm_121] -Xcompiler=-fPIC -Xcompiler=-fvisibility=hidden --expt-relaxed-constexpr --expt-extended-lambda -Xcompiler=-fPIC -std=c++17
 

@@ -6,14 +6,10 @@ import numpy as np
 import sys
 import os
 
-# --- STEP 1: SETUP PATHS (MUST BE FIRST) ---
+# -@ STEP 1: SETUP PATHS (MUST BE FIRST) ---
 # Get the directory of this script (src)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# We need to find the 'build' folder. 
-# Since your script is in `kernel_code/src/test_case.py`, 
-# and build is likely in `BigDataMLSys/build`, we need to go up two levels.
-# We will check both ../build and ../../build just to be safe.
 possible_paths = [
     os.path.join(script_dir, "build"),       # Check kernel_code/build
     os.path.join(script_dir, "..", "build")  # Check BigDataMLSys/build
@@ -33,14 +29,12 @@ for path in possible_paths:
 if not found:
     print(f"CRITICAL WARNING: Could not find 'build' directory in {possible_paths}")
 
-# ---------------------------------------------------------
-# 0. Imports & Setup
-# ---------------------------------------------------------
+# --------------------------------
 try:
     import bten
-    print("✅ 'bten' CUDA extension imported successfully.")
+    print("v 'bten' CUDA extension imported successfully.")
 except ImportError:
-    print("❌ ERROR: Could not import 'bten'.")
+    print("x ERROR: Could not import 'bten'.")
     exit(1)
 
 class GPT2Config:
@@ -51,7 +45,6 @@ class GPT2Config:
 
 # ---------------------------------------------------------
 # 1. The ORIGINAL GPT-2 MLP (Reference)
-# ---------------------------------------------------------
 def gelu_python(x):
     return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
 
@@ -83,17 +76,15 @@ class ReferenceMLP(nn.Module):
         h2 = self.c_proj(h)
         return h2
 
-# ---------------------------------------------------------
-# 2. Your Custom MLP (Target)
-# ---------------------------------------------------------
+# ------------------------------------------------------
+# 2. Our Custom MLP (Target)
 class CustomMLP(nn.Module):
     def __init__(self, n_state, config): 
         super().__init__()
         nx = config.n_embd
-        # We use nn.Linear instead of Conv1D
+        #  use nn.Linear instead of Conv1D
         self.c_fc = nn.Linear(nx, n_state)
         self.c_proj = nn.Linear(n_state, nx)
-        # Note: We don't assign self.act here because we call .gelu() on the tensor
 
     def _to_bten(self, x_torch):
         # Flatten to 2D for MLP operations (Batch*Seq, Dim)
@@ -115,7 +106,6 @@ class CustomMLP(nn.Module):
         # 2. Linear Layer 1 (c_fc) -> Expansion
         # Conv1D weights are [In, Out]. Linear weights are [Out, In].
         # For x @ W, we need [In, Out].
-        # So we take Linear.weight.t() to get [In, Out].
         w1 = self._to_bten(self.c_fc.weight.t().contiguous()) 
         b1 = self._to_bten(self.c_fc.bias)
         
@@ -183,7 +173,6 @@ class BtenMLP:
 
     def forward(self, x):
         # x input is [Batch, 1, Seq, Dim] or similar
-        # We flatten to [Batch*Seq, Dim]
         rows = x.shape[0] * x.shape[1] * x.shape[2]
         dim = x.shape[3]
         
@@ -211,7 +200,7 @@ class BtenMLP:
 
 # ---------------------------------------------------------
 # 3. Verification
-# ---------------------------------------------------------
+# -----------------------------------------------
 def test_mlp():
     torch.manual_seed(42)
     device = torch.device("cuda")
@@ -231,14 +220,6 @@ def test_mlp():
     ref_model = ReferenceMLP(n_inner, config).to(device)
     custom_model = BtenMLP(n_inner, config)
 
-    # ---------------------------------------------------------
-    # 3. WEIGHT LOADING & TRANSPOSTION (The Critical Part)
-    # ---------------------------------------------------------
-    # This simulates loading a GPT-2 checkpoint.
-    # Original GPT-2 weights (Conv1D) are [Input, Output].
-    # PyTorch nn.Linear weights are [Output, Input].
-    # Therefore, we must TRANSPOSE (.t()) when loading into CustomMLP.
-    
     print("Syncing weights (Simulating GPT-2 Checkpoint Load)...")
     # with torch.no_grad():
     #     # c_fc: Expand

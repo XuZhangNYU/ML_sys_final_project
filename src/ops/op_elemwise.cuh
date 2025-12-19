@@ -528,13 +528,10 @@ void op_const_fill(Tensor<T> &t, T value)
     ConstFillFunc<T> f{value};
     if (t.on_device)
     {   
-        // printf("op_const_fill. enter op_elemwise_unary_gpu.." );
-
         op_elemwise_unary_gpu(f, t, t);
     }
     else
     {
-        // printf("\n running op_elemwise_unary_cpu. \n" );
         op_elemwise_unary_cpu(f, t, t);
     }
 }
@@ -550,7 +547,6 @@ void op_uniform_fill(Tensor<T> &t, T min = 0, T max = 1)
         //curandGenerateUniform generates elements in the range [0,1)
         CURAND_OK(curandGenerateUniform(g.gen, t.rawp, t.h * t.w));
         //scale the shift the elements to be in the range [min, max)
-        //op_add(t, (T)0.1, t);
         op_add<T>(t, min/(max-min), t);
         op_multiply(t, max-min, t);
     }
@@ -558,7 +554,6 @@ void op_uniform_fill(Tensor<T> &t, T min = 0, T max = 1)
     {
         UniformFillFuncCPU<T> f{min, max};
         op_elemwise_unary_cpu(f, t, t);
-       // std::cout << "op_uniform_init t=" << t.str() << std::endl;
     }
 }
 

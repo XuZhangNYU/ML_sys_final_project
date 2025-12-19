@@ -6,10 +6,7 @@ import os
 # Get the directory of this script (src)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# We need to find the 'build' folder. 
-# Since your script is in `kernel_code/src/test_case.py`, 
-# and build is likely in `BigDataMLSys/build`, we need to go up two levels.
-# We will check both ../build and ../../build just to be safe.
+# find build manually
 possible_paths = [
     os.path.join(script_dir, "build"),       # Check kernel_code/build
     os.path.join(script_dir, "..", "build")  # Check BigDataMLSys/build
@@ -47,7 +44,6 @@ except ImportError as e:
 def test_4d_bmm_correctness():
     print("\n=== Test: 4D Batched Matrix Multiplication (BMM) ===")
     
-    # 1. Setup Dimensions (Standard GPT-2 Small sizes)
     B = 2    # Batch
     D = 4    # Heads (Depth)
     S = 32   # Sequence Length
@@ -65,11 +61,9 @@ def test_4d_bmm_correctness():
     q_torch = torch.from_numpy(q_np).cuda()
     k_torch = torch.from_numpy(k_np).cuda()
     
-    # PyTorch MatMul handles broadcasting and batching automatically
     # [B, D, S, H] @ [B, D, H, S] -> [B, D, S, S]
     out_torch = torch.matmul(q_torch, k_torch)
     
-    # 4. Run Bten Custom Op
     # Initialize 4D Tensors directly from Numpy
     q_bten = bten.TensorF(B, D, S, H, True)
     q_bten.copy_from_numpy(q_np)
@@ -77,11 +71,9 @@ def test_4d_bmm_correctness():
     k_bten = bten.TensorF(B, D, H, S, True)
     k_bten.copy_from_numpy(k_np)
     
-    # Run BMM (No manual dimensions needed!)
     # The C++ object knows its own shape.
     out_bten = q_bten.bmm(k_bten)
     
-    # 5. Compare Results
     out_bten_np = out_bten.to_numpy() # Should return 4D array [B, D, S, S]
     out_torch_np = out_torch.cpu().numpy()
 
@@ -102,9 +94,9 @@ def test_4d_bmm_correctness():
     print(f"Mean Absolute Diff: {mean_diff:.6f}")
 
     if np.allclose(out_torch_np, out_bten_np, atol=1e-4, rtol=1e-4):
-        print("✅ SUCCESS: BMM results match PyTorch!")
+        print("v SUCCESS: BMM results match PyTorch!")
     else:
-        print("❌ FAILURE: BMM results diverge.")
+        print("Nah!!DS FAILURE: BMM results diverge.")
         
         # Debugging: Check where the error is
         # If Batch 0 is correct but Batch 1 is wrong, your strides are broken.
@@ -126,11 +118,11 @@ def test_tensor_construction():
     print(f"Reported Shape: {shape}")
     
     if len(shape) == 4 and shape == (B, D, H, W):
-        print("✅ Shape reported correctly as 4D")
+        print("v Shape reported correctly as 4D")
     elif len(shape) == 2 and shape == (B*D*H, W):
-        print("⚠️  Shape reported as Flattened 2D (Legacy View). This is valid logic but harder to debug.")
+        print("warning  Shape reported as Flattened 2D (Legacy View). This is valid logic but harder to debug.")
     else:
-        print(f"❌ Weird shape reported: {shape}")
+        print(f"x Weird shape reported: {shape}")
 
     # 3. Test Round Trip
     data = np.arange(B*D*H*W, dtype=np.float32).reshape(B, D, H, W)
@@ -139,15 +131,15 @@ def test_tensor_construction():
     back = t.to_numpy()
     
     if np.allclose(data, back):
-        print("✅ Data Round-Trip (Numpy -> GPU -> Numpy) Successful")
+        print("v Data Round-Trip (Numpy -> GPU -> Numpy) Successful")
     else:
-        print("❌ Data corruption during copy")
+        print("x Data corruption during copy")
 
 if __name__ == "__main__":
     try:
         test_tensor_construction()
         test_4d_bmm_correctness()
     except Exception as e:
-        print(f"\n❌ CRITICAL ERROR: {e}")
+        print(f"\n x CRITICAL ERROR: {e}")
         import traceback
         traceback.print_exc()

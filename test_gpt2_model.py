@@ -31,14 +31,11 @@ from GPT2.config import GPT2Config
 from GPT2.sample import sample_sequence
 from GPT2.encoder import get_encoder
 
-# --- STEP 1: SETUP PATHS (MUST BE FIRST) ---
+# sTEP 1: SETUP PATHS (MUST BE FIRST) ---
 # Get the directory of this script (src)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# We need to find the 'build' folder. 
-# Since your script is in `kernel_code/src/test_case.py`, 
-# and build is likely in `BigDataMLSys/build`, we need to go up two levels.
-# We will check both ../build and ../../build just to be safe.
+# manually find build path
 possible_paths = [
     os.path.join(script_dir, "build"),       # Check kernel_code/build
     os.path.join(script_dir, "..", "build")  # Check BigDataMLSys/build
@@ -58,14 +55,12 @@ for path in possible_paths:
 if not found:
     print(f"CRITICAL WARNING: Could not find 'build' directory in {possible_paths}")
 
-# ---------------------------------------------------------
-# 0. Setup Custom CUDA Extension
-# ---------------------------------------------------------
+
 try:
     import bten
-    print("✅ 'bten' CUDA extension imported successfully.")
+    print("v 'bten' CUDA extension imported successfully.")
 except ImportError:
-    print("❌ ERROR: Could not import 'bten'.")
+    print("x ERROR: Could not import 'bten'.")
     exit(1)
 
 
@@ -156,7 +151,6 @@ class BtenAttention:
         self.c_proj_b.copy_from_numpy(b2.reshape(1,-1))
 
     def forward(self, x):
-        # ... (Linear Proj) ...
         B = x.shape[0]; S = x.shape[2]; Dim = x.shape[3]
         
         # 1. QKV Proj (Linear)
@@ -311,8 +305,7 @@ class BtenLayerNorm:
 
     def forward(self, x):
         # x is [B, 1, S, D] or [B*S, D]. 
-        # LayerNorm works row-wise, so dimensions don't strictly matter 
-        # as long as the last dim is D.
+   
         return x.layernorm(self.gamma, self.beta, self.eps)
 
 class BtenBlock:
@@ -331,11 +324,7 @@ class BtenBlock:
     def forward(self, x):
         # x: [B, 1, S, D]
         
-        # 1. Attention Branch
-        # Note: We need a copy of x for the residual connection?
-        # Your Add kernel might support out-of-place addition returning a new tensor.
-        # Let's assume x.layernorm() returns a new tensor.
-        
+
         normed_x = self.ln_1.forward(x)
         attn_out = self.attn.forward(normed_x)
         
@@ -378,8 +367,7 @@ class BtenGPT2Model:
         B, S = input_ids.shape
         # print("input_id shape", input_ids.shape)
         # 1. Embeddings (CPU / Numpy)
-        # Token Embeddings
-        # Gather logic: wte[input_ids]
+       
         tok_emb = self.wte[input_ids] # [B, S, Dim]
         # print("tok_emb shape", tok_emb.shape)
         # Positional Embeddings
@@ -411,7 +399,6 @@ class BtenLMHead:
         self.decoder_w = None 
 
     def set_embeddings_weights(self, wte_numpy):
-        # ... (Same as before: Transpose and Load) ...
         # print("Tying weights: converting wte [V, D] to decoder [D, V]...")
         w_transposed = wte_numpy.T 
         D, V = w_transposed.shape
@@ -450,7 +437,6 @@ class BtenGPT2LMHeadModel:
         self.transformer.import_weights(torch_model.transformer)
         
         # 2. Tie Weights (Load wte into lm_head)
-        # We access the numpy wte we just stored in the transformer
         print("Tying Embedding Weights...")
         self.lm_head.set_embeddings_weights(self.transformer.wte)
 
@@ -479,9 +465,9 @@ def top_k_logits_numpy(logits, k):
     return np.where(logits < min_val, -1e10, logits)
 
 
-# ---------------------------------------------------------
+# -------------------------@@@@-----------------
 # 1. Pure Numpy Helpers (Replacing PyTorch)
-# ---------------------------------------------------------
+
 
 def softmax_numpy(x, axis=-1):
     """Compute softmax values for each set of scores in x."""
@@ -491,10 +477,7 @@ def softmax_numpy(x, axis=-1):
     return e_x / np.sum(e_x, axis=axis, keepdims=True)
 
 def top_k_logits_numpy(logits, k):
-    """
-    Masks everything but the top k logits.
-    logits: [Batch, Vocab]
-    """
+
     if k == 0:
         return logits
     
@@ -520,10 +503,7 @@ def top_k_logits_numpy(logits, k):
         return out
 
 def multinomial_sample_numpy(probs, num_samples=1):
-    """
-    probs: [Batch, Vocab] (normalized probabilities)
-    Returns: [Batch, num_samples] indices
-    """
+    
     batch_size = probs.shape[0]
     result = np.zeros((batch_size, num_samples), dtype=np.int32)
     
@@ -536,10 +516,7 @@ def multinomial_sample_numpy(probs, num_samples=1):
         
     return result
 
-# ---------------------------------------------------------
-# 2. The Inference Loop (Pure Bten + Numpy)
-# ---------------------------------------------------------
-
+# -----------------------------------------
 def sample_sequence_bten(model, length, start_token=None, batch_size=None, context=None, temperature=1.0, top_k=0, sample=True):
     """
     Generates text using ONLY bten (GPU) and Numpy (CPU).
@@ -572,7 +549,6 @@ def sample_sequence_bten(model, length, start_token=None, batch_size=None, conte
         
         # B. Get Last Token Logits -> CPU
         # logits_bten shape: [Batch, 1, Seq, Vocab]
-        # We need the last timestep.
         
         logits_np = logits_bten.to_numpy() # 4D Numpy Array
         
@@ -612,8 +588,6 @@ from torch.nn.parameter import Parameter
 
 #_________________________
 # Reuse classes from previous steps (BtenAttention, BtenMLP, BtenLayerNorm, BtenBlock, BtenGPT2Model)
-# ... (Paste the class definitions here or import them) ...
-
 def test_end_to_end():
     torch.manual_seed(42)
     
@@ -650,9 +624,9 @@ def test_end_to_end():
     print(f"Max Difference: {diff:.6f}")
     
     if diff < 1e-4:
-        print("✅ SUCCESS: End-to-End GPT-2 Match!")
+        print("v Good SUCCESS: End-to-End GPT-2 Match!")
     else:
-        print("❌ FAILURE: Mismatch.")
+        print("Nah! FAILURE: Mismatch.")
 
 if __name__ == "__main__":
     # test_end_to_end()

@@ -11,7 +11,7 @@
 
 // LEGACY MACRO (Unchanged): Works because we adjust stride_h/h internally
 #define Index(t, row, col) ((((t).rawp)[(t).offset + (row) * (t).stride_h + (col) * (t).stride_w]))
-
+// Ended up not using this much！！！. since direct manipulation with bmm is more cozy 
 #define Index4D(t, b_idx, d_idx, row, col) \
     ((t).rawp[(t).offset + \
               (b_idx) * (t).stride_b + \
@@ -44,16 +44,14 @@ public:
     int32_t d; 
     int32_t true_h; 
     int32_t true_w;
-    // 4D Strides
     int32_t stride_b; 
     int32_t stride_d;
-    // NEW FLAG
+    // Easy 3D 
     bool is_3d; 
     T *rawp;
     std::shared_ptr<T> ref;
     bool on_device;
 
-    // Default Constructor
     Tensor() : h(0), w(0), stride_h(0), stride_w(0), offset(0), 
                b(1), d(1), true_h(0), true_w(0), 
                stride_b(0), stride_d(0), // Init new strides
@@ -62,19 +60,17 @@ public:
         ref = std::shared_ptr<T>(rawp, cpuDeleter<T>());
     }
 
-    // Constructor 1: course hw sadffsf Legacy 2D ---
+    // Constructor 1: course hw Legacy 2D 
     Tensor(int32_t h_, int32_t w_, bool on_device_ = false)
         : h(h_), w(w_), stride_h(w_), stride_w(1), offset(0),
           b(1), d(1), true_h(h_), true_w(w_),
           on_device(on_device_),  is_3d(false)
     {
-        // Even in 2D, calculate theoretical 4D strides for safety
+        // Even in 2D, calculate theoretical 4D strides
         stride_d = h_ * w_; 
         stride_b = stride_d; // b=1, d=1
         allocate(h * w);
     }
-
-
 
     // --- Constructor 2: New 4D ---
     Tensor(int32_t b_, int32_t d_, int32_t h_, int32_t w_, bool on_device_ = false)
@@ -105,11 +101,10 @@ private:
     }
 
 public:
-    // --- Helper for 4D Access (Used by BMM kernel) ---
+    // helper for 4D Access (Used by BMM kernel)
     // Calculates the pointer offset for a specific batch/head
     __device__ __host__ T* ptr(int batch_idx, int head_idx) const {
-        // We treat (Batch, Head) as the "stack" index
-        // Stride for one full matrix (Seq * Dim) is (true_h * w)
+        
         long long matrix_size = true_h * w;
         long long stack_idx = batch_idx * d + head_idx;
         return rawp + offset + (stack_idx * matrix_size);
@@ -201,7 +196,6 @@ public:
 
 
     // Keep Slice (Legacy 2D slicing)
-    // WARNING: Slicing a flattened 4D tensor is dangerous if crossing batch boundaries.
     Tensor<T> slice(int start_h, int end_h, int start_w, int end_w) const
     {
       // 1. Basic Validation (Same as before)
@@ -217,12 +211,6 @@ public:
       t.h = end_h - start_h;
       t.offset = offset + start_h * stride_h + start_w * stride_w;
 
-      // ---------------------------------------------------------
-      // 4. CRITICAL FIX: Invalidate 4D Metadata
-      // ---------------------------------------------------------
-      // Since we took an arbitrary slice, we can no longer guarantee 
-      // that this represents a clean stack of Batches/Heads.
-      // We "downgrade" it to a standard 2D tensor.
       
       t.b = 1;
       t.d = 1;

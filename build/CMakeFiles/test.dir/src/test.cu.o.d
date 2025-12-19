@@ -1,4 +1,4 @@
-CMakeFiles/test.dir/src/test.cu.o : /home/xz4863/scratch/BigDataMLSys/kernel_code/src/test.cu \
+CMakeFiles/test.dir/src/test.cu.o : /home/xz4863/scratch/BigDataMLSys/final_project_submit/src/test.cu \
     /ext3/miniconda3/envs/scivid_deepmind/x86_64-conda-linux-gnu/sysroot/usr/include/stdc-predef.h \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/cuda_runtime.h \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/crt/host_config.h \
@@ -189,7 +189,7 @@ CMakeFiles/test.dir/src/test.cu.o : /home/xz4863/scratch/BigDataMLSys/kernel_cod
     /ext3/miniconda3/envs/scivid_deepmind/x86_64-conda-linux-gnu/sysroot/usr/include/getopt.h \
     /ext3/miniconda3/envs/scivid_deepmind/x86_64-conda-linux-gnu/sysroot/usr/include/bits/getopt_core.h \
     /ext3/miniconda3/envs/scivid_deepmind/x86_64-conda-linux-gnu/sysroot/usr/include/bits/getopt_ext.h \
-    /home/xz4863/scratch/BigDataMLSys/kernel_code/src/utils/tensor.cuh \
+    /home/xz4863/scratch/BigDataMLSys/final_project_submit/src/utils/tensor.cuh \
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/random \
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/cstdint \
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/stdint.h \
@@ -318,10 +318,10 @@ CMakeFiles/test.dir/src/test.cu.o : /home/xz4863/scratch/BigDataMLSys/kernel_cod
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/bits/istream.tcc \
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/bits/sstream.tcc \
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/iostream \
-    /home/xz4863/scratch/BigDataMLSys/kernel_code/src/utils/check_error.cuh \
+    /home/xz4863/scratch/BigDataMLSys/final_project_submit/src/utils/check_error.cuh \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/curand.h \
-    /home/xz4863/scratch/BigDataMLSys/kernel_code/src/ops/op_mm.cuh \
-    /home/xz4863/scratch/BigDataMLSys/kernel_code/src/ops/op_elemwise.cuh \
+    /home/xz4863/scratch/BigDataMLSys/final_project_submit/src/ops/op_mm.cuh \
+    /home/xz4863/scratch/BigDataMLSys/final_project_submit/src/ops/op_elemwise.cuh \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/curand_kernel.h \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/nv/target \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/nv/detail/__target_macros \
@@ -340,7 +340,7 @@ CMakeFiles/test.dir/src/test.cu.o : /home/xz4863/scratch/BigDataMLSys/kernel_cod
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/curand_lognormal.h \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/curand_poisson.h \
     /ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include/curand_discrete2.h \
-    /home/xz4863/scratch/BigDataMLSys/kernel_code/src/ops/op_reduction.cuh \
-    /home/xz4863/scratch/BigDataMLSys/kernel_code/src/ops/op_cross_entropy.cuh \
+    /home/xz4863/scratch/BigDataMLSys/final_project_submit/src/ops/op_reduction.cuh \
+    /home/xz4863/scratch/BigDataMLSys/final_project_submit/src/ops/op_cross_entropy.cuh \
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/c++/cfloat \
     /ext3/miniconda3/envs/scivid_deepmind/lib/gcc/x86_64-conda-linux-gnu/14.3.0/include/float.h

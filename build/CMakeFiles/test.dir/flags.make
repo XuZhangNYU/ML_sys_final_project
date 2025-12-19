@@ -4,7 +4,7 @@
 # compile CUDA with /ext3/miniconda3/envs/scivid_deepmind/bin/nvcc
 CUDA_DEFINES = 
 
-CUDA_INCLUDES = -I/home/xz4863/scratch/BigDataMLSys/kernel_code -I/home/xz4863/scratch/BigDataMLSys/kernel_code/src -I/home/xz4863/scratch/BigDataMLSys/kernel_code/utils -isystem=/ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include
+CUDA_INCLUDES = -I/home/xz4863/scratch/BigDataMLSys/final_project_submit -I/home/xz4863/scratch/BigDataMLSys/final_project_submit/src -I/home/xz4863/scratch/BigDataMLSys/final_project_submit/utils -isystem=/ext3/miniconda3/envs/scivid_deepmind/targets/x86_64-linux/include
 
 CUDA_FLAGS =  --generate-code=arch=compute_70,code=[compute_70,sm_70] --generate-code=arch=compute_75,code=[compute_75,sm_75] --generate-code=arch=compute_80,code=[compute_80,sm_80] --generate-code=arch=compute_86,code=[compute_86,sm_86] --generate-code=arch=compute_89,code=[compute_89,sm_89] -Wno-unused-function --expt-relaxed-constexpr -std=c++17
 

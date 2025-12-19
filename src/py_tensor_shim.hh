@@ -46,40 +46,6 @@ public:
 
   bool is_cuda() const { return t.on_device; }
 
-  // void copy_from_numpy(py::array_t<T, py::array::c_style | py::array::forcecast> arr) {
-  //   if (arr.ndim() != 2) throw std::runtime_error("Expected 2D NumPy array");
-  //   auto h = static_cast<int>(arr.shape(0));
-  //   auto w = static_cast<int>(arr.shape(1));
-  //   if (h != t.h || w != t.w) throw std::runtime_error("Shape mismatch");
-
-  //   // allocate a host tensor
-  //   Tensor<T> host_t(h, w, /*on_device=*/false);
-    
-  //   // memcpy from NumPy to host tensor's raw pointer
-  //   std::memcpy(host_t.rawp, arr.data(), sizeof(T) * h * w);
-
-  //   // Move host -> device or host based on whether it's cuda tensor or not
-  //   if (t.on_device) {
-  //     host_t.toDevice(t);
-  //   } else {
-  //     std::memcpy(t.rawp, host_t.rawp, sizeof(T) * h * w);
-  //   }
-  // }
-
-  // // Copy to NumPy (this→host→NumPy)
-  // py::array to_numpy() const {
-  //   Tensor<T> host_t(t.h, t.w, /*on_device=*/false);
-  //   if (t.on_device) {
-  //     t.toHost(host_t);
-  //   } else {
-  //     std::memcpy(host_t.rawp, t.rawp, sizeof(T) * t.h * t.w);
-  //   }
-
-  //   // Create NumPy array that owns its own memory (copy)
-  //   py::array_t<T> out({t.h, t.w});
-  //   std::memcpy(out.mutable_data(), host_t.rawp, sizeof(T) * t.h * t.w);
-  //   return out;
-  // }
   // --- UPDATED: COPY FROM NUMPY ---
   // Accepts any shape (2D, 3D, 4D) as long as total elements match
   void copy_from_numpy(py::array_t<T, py::array::c_style | py::array::forcecast> arr) {
@@ -94,15 +60,11 @@ public:
     }
 
     // 2. Create a temporary host tensor (treated as flat 2D for copying)
-    // Note: We use the Flattened Height (t.h) and Width (t.w) for the buffer
     Tensor<T> host_t(t.h, t.w, /*on_device=*/false);
     
     // 3. Memcpy
-    // Since both are row-major contiguous, we can copy bytes directly 
-    // regardless of the shape (4D vs 2D).
+    // Since both are row-major contiguous, we can copy bytes directly regardless of the shape (4D vs 2D).
     std::memcpy(host_t.rawp, arr.data(), sizeof(T) * my_size);
-
-    // 4. Send to Device
     if (t.on_device) {
       host_t.toDevice(t);
     } else {
@@ -249,12 +211,9 @@ public:
                 w_idx < 0 || w_idx >= t.true_w) {
                 throw py::index_error("Index out of bounds");
             }
-
-            // COPY SCALAR TO HOST
             
             T val;
             
-            // Calculate pointer location using your new strides
             T* ptr = t.rawp + t.offset + 
                      (b_idx * t.stride_b) + 
                      (d_idx * t.stride_d) + 
@@ -277,7 +236,6 @@ public:
 
     // legacy 2d
     
-    // ... ( existing Helper Lambda) ...
     auto parse_dim = [&](py::handle obj, int dim_size) -> std::pair<int, int> {
       if (obj.is(py::ellipsis()) || obj.is_none()) return {0, dim_size};
       if (py::isinstance<py::slice>(obj)) {
@@ -446,24 +404,19 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
     // --- NEW BINDINGS FOR ATTENTION ---
     
     // Softmax (Row-wise only for now)
-
-    // --- CORRECTED SOFTMAX BINDING ---
     .def("softmax", [](const Self &me) {
-        // 1. Create Output (Allocates Flattened 2D memory)
+        // 1. Create Output (Allocates flattened2D memory)
         PyTensor<T> out(me.t.h, me.t.w, me.t.on_device);
         
-        // 2. CRITICAL: Copy 4D Metadata from Input
+        // 2. aaa !!! important: :Copy 4D Metadata from Input
         out.t.b = me.t.b;
         out.t.d = me.t.d;
         out.t.true_h = me.t.true_h;
         out.t.true_w = me.t.true_w;
-        // Also copy strides if necessary, though Constructor usually handles h/w strides.
-        // For safety, recalculate 4D strides based on new shape if dimensions changed, 
-        // but for Softmax (shape preserving), we can just copy or rely on class logic.
+        
         out.t.stride_b = me.t.stride_b;
         out.t.stride_d = me.t.stride_d;
 
-        // 3. Run Kernel
         op_softmax<T>(me.t, out.t);
         return out;
     }, "Computes row-wise softmax (Preserves 4D Shape).")
@@ -478,13 +431,6 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
              throw std::runtime_error("View size mismatch.");
         }
 
-
-        // Create new View (Shares pointer!)
-        // Note: For safety in Python, maybe return a copy or handle refcounting carefully.
-        // For this lab, let's return a NEW tensor that shares the memory pointer?
-        // NO, simpler: Just return a new tensor copy for safety to avoid double-free issues
-        // with your current smart pointer setup.
-        
         PyTensor<T> out(b, d, h, w, me.t.on_device);
         if (me.t.on_device) {
              cudaMemcpy(out.t.rawp, me.t.rawp, new_size * sizeof(T), cudaMemcpyDeviceToDevice);
@@ -516,8 +462,6 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
     // Batched Matrix Multiplication
     // Usage: A.bmm(B, batch_count, m, n, k)
     // We assume the user has flattened the tensors to 2D before calling this
-    // --- OLD BINDING (Delete this) ---
-    // .def("bmm", [](const Self &me, const Self &other, int batch_count, int m, int n, int k) ...
 
     // --- NEW BINDING (Use this) ---
     .def("bmm", [](const Self &me, const Self &other) {
@@ -542,8 +486,6 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
     .def("permute_0213", [](const Self &me) {
         // Input: [B, Seq, Heads, Dim] (Logically)
         // Output: [B, Heads, Seq, Dim]
-        // Note: We create output with swapped dims for Metadata
-        // Input 'me' has h=Seq, d=Heads. Output should swap them.
         
         PyTensor<T> out(me.t.b, me.t.true_h, me.t.d, me.t.true_w, me.t.on_device);
         // Note the swap: out.d = me.h, out.h = me.d
@@ -559,15 +501,7 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
         op_causal_mask<T>(out.t, scale);
         return out;
     }, py::arg("scale"))
-    // .def("split_qkv", [](const Self &me) {
-    //     int rows = me.t.h;
-    //     int dim = me.t.w / 3;
-    //     PyTensor<T> q(rows, dim, true);
-    //     PyTensor<T> k(rows, dim, true);
-    //     PyTensor<T> v(rows, dim, true);
-    //     op_split_qkv(me.t, q.t, k.t, v.t);
-    //     return py::make_tuple(q, k, v);
-    // })
+
 
     // 1. Split QKV Binding
     .def("split_qkv", [](const Self &me, int n_head, int head_dim) {
@@ -576,7 +510,6 @@ void bind_tensor_type(py::module_ &m, const char* pyname) {
         int hidden_dim = n_head * head_dim;
         
         // Create 3 output tensors: [Batch*Seq, Hidden]
-        // Note: These are 2D for now, we reshaped them in Python later
         PyTensor<T> q(rows, hidden_dim, me.t.on_device);
         PyTensor<T> k(rows, hidden_dim, me.t.on_device);
         PyTensor<T> v(rows, hidden_dim, me.t.on_device);

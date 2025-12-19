@@ -1,4 +1,4 @@
-# Install script for directory: /home/xz4863/scratch/BigDataMLSys/kernel_code
+# Install script for directory: /home/xz4863/scratch/BigDataMLSys/final_project_submit
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -50,5 +50,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/home/xz4863/scratch/BigDataMLSys/kernel_code/build/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/home/xz4863/scratch/BigDataMLSys/final_project_submit/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
